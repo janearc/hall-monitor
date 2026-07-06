@@ -56,6 +56,15 @@ type Watcher struct {
 	// groupTopics is consumer group -> topics it consumes, from the last
 	// introspection tick. Zero groups on a producing topic = the void.
 	groupTopics map[string][]string
+
+	// onRecord, when set, is called for every observed record (any framing).
+	// The absence ledger rides this seam. Set before Run; not synchronized.
+	onRecord func(topic string, at time.Time)
+}
+
+// OnRecord registers a per-record callback. MUST be called before Run.
+func (w *Watcher) OnRecord(fn func(topic string, at time.Time)) {
+	w.onRecord = fn
 }
 
 // New connects the watcher and subscribes it to every current non-internal
@@ -190,6 +199,9 @@ func (w *Watcher) observe(rec *kgo.Record) {
 	w.mu.Lock()
 	w.producersSeen[rec.Topic] = obs.At
 	w.mu.Unlock()
+	if w.onRecord != nil {
+		w.onRecord(rec.Topic, obs.At)
+	}
 }
 
 // introspectLoop asks the broker who exists and who listens, on a jittered

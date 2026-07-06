@@ -1,8 +1,8 @@
 // hm is the mesh's hall monitor: the resident that checks services actually
-// do on the wire what they claim to do. This is v0, the passive skeleton: a
-// fleet citizen (heartbeat, /health, /metrics, JSON logs) whose eyes — the
-// consume-everything loop and broker introspection — arrive in the next
-// change. See doc/rfc-hall-monitor.md for the ratified design.
+// do on the wire what they claim to do. v0 is the passive half: a fleet
+// citizen (heartbeat, /health, /metrics, JSON logs) running the
+// consume-everything loop, broker introspection, the absence ledger, and
+// the truth report at /truth. See doc/rfc-hall-monitor.md for the design.
 package main
 
 import (
@@ -19,6 +19,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/janearc/hall-monitor/pkg/config"
+	"github.com/janearc/hall-monitor/pkg/ledger"
+	"github.com/janearc/hall-monitor/pkg/report"
 	"github.com/janearc/hall-monitor/pkg/server"
 	"github.com/janearc/hall-monitor/pkg/watch"
 )
@@ -85,6 +87,11 @@ func run() error {
 				defer cancel()
 				w.Close(leaveCtx)
 			}()
+			// the absence ledger rides the record seam; the truth report
+			// reads both and serves on the control port, current at ask time
+			led := ledger.New()
+			w.OnRecord(led.Observe)
+			srv.Handle("/truth", report.Handler(w, led))
 			go w.Run(ctx, cfg.IntrospectTick)
 		}
 	}

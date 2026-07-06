@@ -26,6 +26,7 @@ type Health struct {
 // Server owns the HTTP listener and the health state it reports.
 type Server struct {
 	http  *http.Server
+	mux   *http.ServeMux
 	log   *slog.Logger
 	start time.Time
 
@@ -45,11 +46,17 @@ func New(addr string, log *slog.Logger) *Server {
 		log = slog.Default()
 	}
 	s := &Server{log: log, start: time.Now()}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/health", s.handleHealth)
-	mux.Handle("/metrics", metrics.Handler())
-	s.http = &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	s.mux = http.NewServeMux()
+	s.mux.HandleFunc("/health", s.handleHealth)
+	s.mux.Handle("/metrics", metrics.Handler())
+	s.http = &http.Server{Addr: addr, Handler: s.mux, ReadHeaderTimeout: 5 * time.Second}
 	return s
+}
+
+// Handle registers an additional route on the control port. MUST be called
+// before Serve.
+func (s *Server) Handle(pattern string, h http.Handler) {
+	s.mux.Handle(pattern, h)
 }
 
 // SetDegraded marks the health surface degraded with a human-readable reason.
