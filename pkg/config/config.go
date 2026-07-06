@@ -45,6 +45,7 @@ func FromEnv() Config {
 	return cfg
 }
 
+// envOr returns the env var's value, or fallback when unset/empty.
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
