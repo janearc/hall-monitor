@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/janearc/hall-monitor/pkg/metrics"
@@ -28,14 +29,14 @@ type Server struct {
 	log   *slog.Logger
 	start time.Time
 
-	// setDegraded is written by the owning process when a dependency is down
-	// (e.g. the broker is unreachable); read by /health. Guarded by the
-	// httpapi goroutine being the only reader and Set being atomic enough for
-	// a status string is NOT assumed: a mutex would be overkill for v0's
-	// single writer at startup, but the field is private and mutated only via
-	// SetDegraded before Serve, so the race window is nil today. Revisit when
-	// runtime degradation (broker loss mid-flight) starts writing it.
-	degraded string
+	// degraded is a bool because degraded IS a bool; reason is the separate
+	// human-readable why. A degraded state without a reason is banned (fail
+	// loud means saying what failed), which SetDegraded enforces by taking
+	// the reason as its argument. Mutex-guarded so runtime degradation
+	// (broker loss mid-flight, later) can write while /health reads.
+	mu       sync.RWMutex
+	degraded bool
+	reason   string
 }
 
 // New builds the control port on addr.
@@ -52,21 +53,26 @@ func New(addr string, log *slog.Logger) *Server {
 }
 
 // SetDegraded marks the health surface degraded with a human-readable reason.
-// Call before Serve; see the field comment for the mid-flight caveat.
 func (s *Server) SetDegraded(reason string) {
-	s.degraded = reason
+	s.mu.Lock()
+	s.degraded = true
+	s.reason = reason
+	s.mu.Unlock()
 }
 
+// handleHealth serves the /health payload, degraded state included.
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	h := Health{
 		Service:       "hm",
 		Status:        "ok",
 		UptimeSeconds: int64(time.Since(s.start).Seconds()),
 	}
-	if s.degraded != "" {
+	s.mu.RLock()
+	if s.degraded {
 		h.Status = "degraded"
-		h.Detail = s.degraded
+		h.Detail = s.reason
 	}
+	s.mu.RUnlock()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(h)
 }

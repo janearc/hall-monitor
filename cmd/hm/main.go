@@ -22,6 +22,7 @@ import (
 	"github.com/janearc/hall-monitor/pkg/watch"
 )
 
+// main parses the command line and runs the daemon.
 func main() {
 	cmd := &cobra.Command{
 		Use:          "hm",
@@ -36,6 +37,8 @@ func main() {
 	}
 }
 
+// run is the daemon: logging, config, the control port, the heartbeat, and
+// (as the stack above this lands) the watch loops; blocks until signalled.
 func run() error {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
@@ -57,7 +60,9 @@ func run() error {
 	} else {
 		p, err := emit.New(ctx, cfg.KafkaBrokers, cfg.SchemaRegistryURL)
 		if err != nil {
-			srv.SetDegraded("kafka unreachable at startup: " + err.Error())
+			// the health reason is a stable operator-facing sentence; the raw
+			// error carries addresses and library noise and belongs in the log
+			srv.SetDegraded("kafka unreachable at startup (see logs)")
 			logger.Error("kafka unreachable at startup; health reports degraded", "err", err)
 		} else {
 			pub = p
