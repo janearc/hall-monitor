@@ -46,6 +46,26 @@ func TestObserveClassifies(t *testing.T) {
 	}
 }
 
+func TestIsInternalTopic(t *testing.T) {
+	for topic, want := range map[string]bool{
+		"_schemas": true, "__consumer_offsets": true, "delight.events": false, "": false,
+	} {
+		if got := isInternalTopic(topic); got != want {
+			t.Fatalf("isInternalTopic(%q) = %v, want %v", topic, got, want)
+		}
+	}
+}
+
+func TestJitterBounds(t *testing.T) {
+	tick := time.Minute
+	for range 1000 {
+		d := jitter(tick)
+		if d < 48*time.Second || d >= 72*time.Second {
+			t.Fatalf("jitter(%v) = %v, outside [0.8t, 1.2t)", tick, d)
+		}
+	}
+}
+
 func TestFindVoids(t *testing.T) {
 	now := time.Now()
 	seen := map[string]time.Time{
@@ -53,8 +73,8 @@ func TestFindVoids(t *testing.T) {
 		"delight.events":          now,
 		"_schemas":                now, // broker internal: never a void
 	}
-	hasEar := map[string]bool{"delight.events": true}
-	voids := findVoids(seen, hasEar)
+	hasConsumer := map[string]bool{"delight.events": true}
+	voids := findVoids(seen, hasConsumer)
 	if len(voids) != 1 || voids[0] != "observability.transfers" {
 		t.Fatalf("voids = %v, want [observability.transfers]", voids)
 	}

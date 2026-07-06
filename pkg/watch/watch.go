@@ -1,9 +1,9 @@
-// Package watch is hm's eyes: the consume-everything loop and the broker
-// introspection tick. It is the passive half of the RFC — read-only against
-// production, resident, mechanical, no LLM. It observes two things the rest
-// of the fleet cannot see about itself: what is actually on the wire (every
-// record on every topic), and who is actually listening (consumer groups,
-// their subscriptions, their lag).
+// Package watch is hm's observation surface: the consume-everything loop and
+// the broker introspection tick. It is the passive half of the RFC —
+// read-only against production, resident, mechanical, no LLM. It observes
+// two things the fleet cannot see about itself: what is actually on the wire
+// (every record on every topic), and who is actually listening (consumer
+// groups, their subscriptions, their lag).
 package watch
 
 import (
@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
-	"regexp"
 	"sort"
 	"sync"
 	"time"
@@ -23,9 +22,12 @@ import (
 	"github.com/janearc/hall-monitor/pkg/metrics"
 )
 
-// internalTopic matches topics the broker and registry own (double-underscore
-// internals, _schemas); hm observes the fleet's traffic, not kafka's own.
-var internalTopic = regexp.MustCompile(`^_`)
+// isInternalTopic reports whether the broker or registry owns the topic
+// (leading underscore: _schemas, __consumer_offsets). A byte check, not a
+// pattern — there is exactly one rule and it lives at index 0.
+func isInternalTopic(topic string) bool {
+	return len(topic) > 0 && topic[0] == '_'
+}
 
 // Observation is one record's identity on the wire: where it appeared and
 // what schema it claimed. The ledger (next change) accumulates these; today
@@ -43,6 +45,11 @@ type Watcher struct {
 	log    *slog.Logger
 
 	mu sync.RWMutex
+	// consuming is the explicit set of topics the client has been told to
+	// consume. Explicit, not a pattern: the introspection tick discovers new
+	// topics from the broker and adds them by name, so the consumed set is
+	// always auditable and never depends on pattern semantics.
+	consuming map[string]bool
 	// producersSeen is topic -> last time hm saw a record on it. This is the
 	// seed of the absence ledger: presence with history.
 	producersSeen map[string]time.Time
@@ -51,9 +58,10 @@ type Watcher struct {
 	groupTopics map[string][]string
 }
 
-// New connects the watcher. Unlike other froods, hm does not treat a down
-// broker as best-effort: the caller marks /health degraded and retries — a
-// blind hm never pretends otherwise.
+// New connects the watcher and subscribes it to every current non-internal
+// topic, by name. Unlike other froods, hm does not treat a down broker as
+// best-effort: the caller marks /health degraded — an hm that cannot see
+// never pretends otherwise.
 func New(ctx context.Context, brokers []string, log *slog.Logger) (*Watcher, error) {
 	if len(brokers) == 0 {
 		return nil, fmt.Errorf("no kafka brokers configured")
@@ -64,50 +72,91 @@ func New(ctx context.Context, brokers []string, log *slog.Logger) (*Watcher, err
 	cl, err := kgo.NewClient(
 		kgo.SeedBrokers(brokers...),
 		kgo.ConsumerGroup("hm"),
-		kgo.ConsumeRegex(),
-		// every topic that is not broker-internal; new topics are picked up
-		// by the same regex as metadata refreshes, so a contract hm does not
-		// know still becomes an observation (and a finding), never a blind spot
-		kgo.ConsumeTopics(`^[^_].*`),
 		kgo.ConsumeResetOffset(kgo.NewOffset().AtEnd()),
 	)
 	if err != nil {
 		return nil, err
 	}
-	if err := cl.Ping(ctx); err != nil {
-		cl.Close()
-		return nil, fmt.Errorf("kafka unreachable: %w", err)
-	}
-	return &Watcher{
+	w := &Watcher{
 		client:        cl,
 		adm:           kadm.NewClient(cl),
 		log:           log,
+		consuming:     map[string]bool{},
 		producersSeen: map[string]time.Time{},
 		groupTopics:   map[string][]string{},
-	}, nil
+	}
+	// subscribe to the current topic set before returning, so a watcher that
+	// cannot even list topics fails construction loudly instead of running blind
+	if err := w.addNewTopics(ctx); err != nil {
+		cl.Close()
+		return nil, fmt.Errorf("initial topic subscription: %w", err)
+	}
+	return w, nil
 }
 
-// Close releases the clients.
-func (w *Watcher) Close() {
-	if w != nil && w.client != nil {
-		w.client.Close()
+// Close leaves the consumer group explicitly, then releases the client. The
+// explicit leave matters: a member that vanishes without leaving makes the
+// broker wait out the session timeout before rebalancing, stalling every
+// other consumer in the group — hm goes out of its way to never be the
+// cause of the class of outage it exists to catch.
+func (w *Watcher) Close(ctx context.Context) {
+	if w == nil || w.client == nil {
+		return
 	}
+	if err := w.client.LeaveGroupContext(ctx); err != nil {
+		w.log.Warn("group leave on shutdown failed (broker will time the member out)", "err", err)
+	}
+	w.client.Close()
+}
+
+// addNewTopics lists the broker's topics and subscribes, by name, to any
+// non-internal topic not already consumed.
+func (w *Watcher) addNewTopics(ctx context.Context) error {
+	details, err := w.adm.ListTopics(ctx)
+	if err != nil {
+		return fmt.Errorf("list topics: %w", err)
+	}
+	var fresh []string
+	w.mu.Lock()
+	for topic := range details {
+		if isInternalTopic(topic) || w.consuming[topic] {
+			continue
+		}
+		w.consuming[topic] = true
+		fresh = append(fresh, topic)
+	}
+	w.mu.Unlock()
+	if len(fresh) > 0 {
+		sort.Strings(fresh)
+		w.client.AddConsumeTopics(fresh...)
+		w.log.Info("subscribed to topics", "added", fresh)
+		metrics.Add("hm_topics_subscribed_total", int64(len(fresh)))
+	}
+	return nil
 }
 
 // Run drives both loops until ctx cancels: the poll loop inline, the
 // introspection tick in its own goroutine. Both are hm's hot paths and are
-// instrumented as such (hm_watch_* counters) — if hm is the problem, hm says so.
+// instrumented as such (hm_watch_*, hm_introspect_*) — if hm is the
+// problem, hm says so.
 func (w *Watcher) Run(ctx context.Context, tick time.Duration) {
 	if w == nil {
 		return
 	}
 	go w.introspectLoop(ctx, tick)
 	for {
+		// cancellation is checked at the top of every iteration so shutdown
+		// never waits on a fetch
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
+		// PollFetches blocks until records arrive, an error surfaces, or ctx
+		// cancels. Errors arrive per topic-partition: log and count each,
+		// then poll again — kgo owns retry and backoff internally, so this
+		// loop's only job on error is to record that it happened and keep
+		// observing everything else.
 		fetches := w.client.PollFetches(ctx)
 		if errs := fetches.Errors(); len(errs) > 0 {
 			if ctx.Err() != nil {
@@ -146,16 +195,14 @@ func (w *Watcher) observe(rec *kgo.Record) {
 // introspectLoop asks the broker who exists and who listens, on a jittered
 // tick so hm cannot self-synchronize into a periodic spike.
 func (w *Watcher) introspectLoop(ctx context.Context, tick time.Duration) {
-	if tick <= 0 {
+	if tick < 5*time.Second {
 		tick = time.Minute
 	}
 	for {
-		// jitter +-20% around the tick
-		d := tick + time.Duration((rand.Float64()-0.5)*0.4*float64(tick))
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(d):
+		case <-time.After(jitter(tick)):
 		}
 		start := time.Now()
 		if err := w.introspect(ctx); err != nil {
@@ -167,16 +214,32 @@ func (w *Watcher) introspectLoop(ctx context.Context, tick time.Duration) {
 	}
 }
 
-// introspect refreshes the who-listens map and flags the void: topics with
-// live producers and zero live consumer groups. hm's own group is excluded —
-// hm listening does not make a topic heard.
+// jitter returns a duration uniform in [0.8*tick, 1.2*tick), integer math
+// throughout — the standard smear for periodic workers (same family as full
+// jitter, bounded tighter because this tick also drives topic discovery and
+// should not wander): uniform noise around the base breaks alignment
+// between periodic loops so their load cannot stack into synchronized
+// spikes.
+func jitter(tick time.Duration) time.Duration {
+	span := tick / 5 * 2 // the 40% window, as a Duration (int64 ns)
+	return tick - tick/5 + time.Duration(rand.Int64N(int64(span)))
+}
+
+// introspect refreshes the topic subscription and the who-listens map, then
+// flags the void: topics with live producers and zero live consumer groups.
+// hm's own group is excluded — hm listening does not make a topic heard.
 func (w *Watcher) introspect(ctx context.Context) error {
+	// new topics first: discovery drives the explicit subscription (never a
+	// pattern), so a topic born between ticks is observed within one tick
+	if err := w.addNewTopics(ctx); err != nil {
+		return err
+	}
 	groups, err := w.adm.DescribeGroups(ctx)
 	if err != nil {
 		return fmt.Errorf("describe groups: %w", err)
 	}
 	listening := map[string][]string{} // group -> topics
-	topicHasEar := map[string]bool{}
+	hasConsumer := map[string]bool{}
 	for _, g := range groups {
 		if g.Group == "hm" {
 			continue
@@ -184,11 +247,19 @@ func (w *Watcher) introspect(ctx context.Context) error {
 		for _, m := range g.Members {
 			c, ok := m.Assigned.AsConsumer()
 			if !ok {
+				// a member whose assignment is not consumer-shaped (custom
+				// group protocols, kafka-connect style). None exist in this
+				// fleet, so seeing one IS a finding: count it, name it, keep
+				// going — it is metadata hm cannot yet read, not a reason to
+				// fail the whole tick.
+				metrics.Inc("hm_nonconsumer_group_members_total")
+				w.log.Warn("group member with non-consumer assignment (unreadable metadata)",
+					"group", g.Group)
 				continue
 			}
 			for _, t := range c.Topics {
 				listening[g.Group] = append(listening[g.Group], t.Topic)
-				topicHasEar[t.Topic] = true
+				hasConsumer[t.Topic] = true
 			}
 		}
 	}
@@ -201,7 +272,7 @@ func (w *Watcher) introspect(ctx context.Context) error {
 	}
 	w.mu.Unlock()
 
-	voids := findVoids(seen, topicHasEar)
+	voids := findVoids(seen, hasConsumer)
 	for _, topic := range voids {
 		metrics.Inc(fmt.Sprintf("hm_void_topics_total{topic=%q}", topic))
 		w.log.Error("producing with zero live consumer groups (refusal-class)",
@@ -213,12 +284,13 @@ func (w *Watcher) introspect(ctx context.Context) error {
 }
 
 // findVoids returns the topics that have a live producer (seen) and no live
-// consumer group (hasEar), excluding broker internals. Pure so the void rule
-// — the exact failure class of the silent week — is testable without a broker.
-func findVoids(seen map[string]time.Time, hasEar map[string]bool) []string {
+// consumer group (hasConsumer), excluding broker internals. Pure so the void
+// rule — the exact failure class of the silent week — is testable without a
+// broker.
+func findVoids(seen map[string]time.Time, hasConsumer map[string]bool) []string {
 	var voids []string
 	for topic := range seen {
-		if internalTopic.MatchString(topic) || hasEar[topic] {
+		if isInternalTopic(topic) || hasConsumer[topic] {
 			continue
 		}
 		voids = append(voids, topic)
@@ -243,13 +315,19 @@ func (w *Watcher) Snapshot() (producers map[string]time.Time, groups map[string]
 	return producers, groups
 }
 
-// frameSchemaID reads the Confluent SR wire header and returns the schema id.
-// hm keeps the id — it is the record's claimed identity, the thing hm exists
-// to check — where the fleet's consumers discard it (their type is fixed by
-// topic). Anything without the magic byte is not contract traffic.
+// frameSchemaID reads the Confluent SR wire header and returns the schema
+// id. hm keeps the id — it is the record's claimed identity, the thing hm
+// exists to check — where the fleet's consumers discard it (their type is
+// fixed by topic). The error path is not a not-my-job shrug; it is the
+// detection this service was built for: unframed bytes on a fleet topic
+// mean a producer operating outside the contract system — a console
+// producer, a misconfigured client, or hand-rolled protocol code. observe()
+// counts it and logs it refusal-class, and the record still advances (hm is
+// passive in v0; under leases this exact signal is what stops an emitter's
+// traffic).
 func frameSchemaID(frame []byte) (int32, error) {
 	if len(frame) < 5 || frame[0] != 0x00 {
-		return -1, fmt.Errorf("not a confluent SR frame (len=%d)", len(frame))
+		return -1, fmt.Errorf("no SR framing (len=%d): producer outside the contract system", len(frame))
 	}
 	return int32(binary.BigEndian.Uint32(frame[1:5])), nil
 }
