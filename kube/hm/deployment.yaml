@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hm
+  namespace: fleet
+  labels:
+    app.kubernetes.io/name: hm
+    app.kubernetes.io/part-of: fleet
+spec:
+  # one hm governs the whole mesh today (RFC declaration 6); its consumer
+  # group would tolerate replicas, but the ledger is in-memory in v0 so a
+  # second replica would just split the observations
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hm
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hm
+        app.kubernetes.io/part-of: fleet
+    spec:
+      serviceAccountName: hm
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+        - name: hm
+          # locally built, imported into k3d by name; same convention as the
+          # rest of the fleet's local images
+          image: hall-monitor-hm:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: control
+              containerPort: 8090
+          env:
+            - name: HM_KAFKA_BROKERS
+              value: "kafka:9092"
+            - name: HM_SCHEMA_REGISTRY_URL
+              value: "http://schema-registry:8081"
+            - name: HM_HTTP_ADDR
+              value: ":8090"
+          # liveness only: a degraded hm (broker gone mid-flight) must stay
+          # up and KEEP SAYING degraded -- restarting it would be the
+          # present-uncertain-state-as-truth failure with extra steps
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: control
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi

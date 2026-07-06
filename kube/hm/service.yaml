@@ -1,0 +1,17 @@
+# the control port as a ClusterIP service: /health, /metrics, /truth.
+# tiny-monitor and the alarm path read the truth report from here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: hm
+  namespace: fleet
+  labels:
+    app.kubernetes.io/name: hm
+    app.kubernetes.io/part-of: fleet
+spec:
+  selector:
+    app.kubernetes.io/name: hm
+  ports:
+    - name: control
+      port: 8090
+      targetPort: control
