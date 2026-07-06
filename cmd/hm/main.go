@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/janearc/big-little-mesh/emit"
 	"github.com/janearc/big-little-mesh/frood"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/janearc/hall-monitor/pkg/config"
 	"github.com/janearc/hall-monitor/pkg/server"
+	"github.com/janearc/hall-monitor/pkg/watch"
 )
 
 // main parses the command line and runs the daemon.
@@ -66,6 +68,24 @@ func run() error {
 		} else {
 			pub = p
 			defer pub.Close()
+		}
+
+		// The watch loops: consume-everything + the introspection tick. A
+		// watcher that cannot connect is the same degraded state as no broker.
+		w, err := watch.New(ctx, cfg.KafkaBrokers, logger)
+		if err != nil {
+			srv.SetDegraded("watcher could not connect to kafka (see logs)")
+			logger.Error("watcher could not connect; health reports degraded", "err", err)
+		} else {
+			// shutdown leaves the consumer group cleanly so the broker
+			// rebalances immediately; fresh context because the daemon ctx
+			// is already cancelled by the time this defer runs
+			defer func() {
+				leaveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				w.Close(leaveCtx)
+			}()
+			go w.Run(ctx, cfg.IntrospectTick)
 		}
 	}
 
