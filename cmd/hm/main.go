@@ -19,6 +19,7 @@ import (
 
 	"github.com/janearc/hall-monitor/pkg/config"
 	"github.com/janearc/hall-monitor/pkg/server"
+	"github.com/janearc/hall-monitor/pkg/watch"
 )
 
 func main() {
@@ -61,6 +62,17 @@ func run() error {
 		} else {
 			pub = p
 			defer pub.Close()
+		}
+
+		// The eyes: consume-everything + the introspection tick. A watcher
+		// that cannot connect is the same degraded state as no broker.
+		w, err := watch.New(ctx, cfg.KafkaBrokers, logger)
+		if err != nil {
+			srv.SetDegraded("watcher could not connect: " + err.Error())
+			logger.Error("watcher could not connect; health reports degraded", "err", err)
+		} else {
+			defer w.Close()
+			go w.Run(ctx, cfg.IntrospectTick)
 		}
 	}
 

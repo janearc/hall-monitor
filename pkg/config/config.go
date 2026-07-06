@@ -21,6 +21,9 @@ type Config struct {
 	// HeartbeatInterval is the frood heartbeat cadence (HM_HEARTBEAT_INTERVAL,
 	// Go duration syntax).
 	HeartbeatInterval time.Duration
+	// IntrospectTick is the broker-introspection cadence (HM_INTROSPECT_TICK,
+	// Go duration syntax). Jittered +-20% at runtime.
+	IntrospectTick time.Duration
 }
 
 // FromEnv loads Config with defaults matching the fleet's k3d layout.
@@ -40,6 +43,12 @@ func FromEnv() Config {
 	if v := os.Getenv("HM_HEARTBEAT_INTERVAL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			cfg.HeartbeatInterval = d
+		}
+	}
+	cfg.IntrospectTick = time.Minute
+	if v := os.Getenv("HM_INTROSPECT_TICK"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			cfg.IntrospectTick = d
 		}
 	}
 	return cfg
