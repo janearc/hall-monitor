@@ -1,0 +1,93 @@
+// Package server is hm's control port: /health and /metrics, the two
+// endpoints every fleet daemon owes the mesh. Nothing else lives here; hm's
+// verdict surfaces arrive with the truth report, not before.
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/janearc/hall-monitor/pkg/metrics"
+)
+
+// Health is the /health payload. Degraded states are reported, never hidden:
+// hm holds other services to that standard and is held to it first.
+type Health struct {
+	Service       string `json:"service"`
+	Status        string `json:"status"` // "ok" or "degraded"
+	Detail        string `json:"detail,omitempty"`
+	UptimeSeconds int64  `json:"uptime_seconds"`
+}
+
+// Server owns the HTTP listener and the health state it reports.
+type Server struct {
+	http  *http.Server
+	log   *slog.Logger
+	start time.Time
+
+	// degraded is a bool because degraded IS a bool; reason is the separate
+	// human-readable why. A degraded state without a reason is banned (fail
+	// loud means saying what failed), which SetDegraded enforces by taking
+	// the reason as its argument. Mutex-guarded so runtime degradation
+	// (broker loss mid-flight, later) can write while /health reads.
+	mu       sync.RWMutex
+	degraded bool
+	reason   string
+}
+
+// New builds the control port on addr.
+func New(addr string, log *slog.Logger) *Server {
+	if log == nil {
+		log = slog.Default()
+	}
+	s := &Server{log: log, start: time.Now()}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", s.handleHealth)
+	mux.Handle("/metrics", metrics.Handler())
+	s.http = &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	return s
+}
+
+// SetDegraded marks the health surface degraded with a human-readable reason.
+func (s *Server) SetDegraded(reason string) {
+	s.mu.Lock()
+	s.degraded = true
+	s.reason = reason
+	s.mu.Unlock()
+}
+
+// handleHealth serves the /health payload, degraded state included.
+func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	h := Health{
+		Service:       "hm",
+		Status:        "ok",
+		UptimeSeconds: int64(time.Since(s.start).Seconds()),
+	}
+	s.mu.RLock()
+	if s.degraded {
+		h.Status = "degraded"
+		h.Detail = s.reason
+	}
+	s.mu.RUnlock()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(h)
+}
+
+// Serve blocks until ctx is cancelled, then drains with a short grace period.
+func (s *Server) Serve(ctx context.Context) error {
+	errc := make(chan error, 1)
+	go func() { errc <- s.http.ListenAndServe() }()
+	s.log.Info("control port up", "addr", s.http.Addr)
+	select {
+	case err := <-errc:
+		return err
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return s.http.Shutdown(shutdownCtx)
+	}
+}
