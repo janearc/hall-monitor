@@ -16,6 +16,27 @@ spec:
       app.kubernetes.io/name: hm
   template:
     metadata:
+      # Opt in to Prometheus scraping. hm has emitted the exposition format on
+      # its control port since it was written -- hm_void_topics_total,
+      # hm_records_total, hm_introspect_ticks_total, hm_topics_subscribed_total
+      # -- and until 2026-08-20 nothing in this fleet scraped anything at all,
+      # so those series went nowhere.
+      #
+      # This matters more for hm than for most services. hm's whole purpose is
+      # the absence ledger: producers with no live consumers, heartbeats that
+      # stopped, replies that never came. It found `observability.events`
+      # producing into the void and said so at refusal level every 55 seconds
+      # for 116 consecutive ticks -- into a container log nobody tails. A
+      # finding nobody receives is not a finding, and the founding story in the
+      # README (a week of producers emitting to topics nothing consumed, every
+      # artifact gate green) had quietly repeated itself with hm running.
+      #
+      # This annotation is the opt-in the prometheus fleet-services job keys
+      # on. No code change: the metrics were always there.
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8090"
+        prometheus.io/path: "/metrics"
       labels:
         app.kubernetes.io/name: hm
         app.kubernetes.io/part-of: fleet
