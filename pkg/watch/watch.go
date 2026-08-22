@@ -22,6 +22,21 @@ import (
 	"github.com/janearc/hall-monitor/pkg/metrics"
 )
 
+// ErrWireLost is what Run returns when the broker has answered nothing --
+// no fetch, no successful introspection -- for longer than DeadAfter. kgo
+// retries its own connections, so a brief broker bounce never surfaces
+// here; this is the long silence, and the caller's answer to it is to mark
+// itself degraded, close this watcher, and build a new one through the
+// connect loop rather than poll a dead client forever.
+var ErrWireLost = fmt.Errorf("kafka wire lost: no fetch or introspection succeeded within the dead-after window")
+
+// DeadAfter is how long the wire may answer nothing before Run gives it up.
+// Five minutes is several introspection ticks (the tick is a minute by
+// default), so one failed tick is a logged error and five in a row is a
+// lost wire. A quiet wire is NOT a dead one: a healthy broker with no
+// traffic still answers the introspection tick, which refreshes the clock.
+const DeadAfter = 5 * time.Minute
+
 // isInternalTopic reports whether the broker or registry owns the topic
 // (leading underscore: _schemas, __consumer_offsets). A byte check, not a
 // pattern — there is exactly one rule and it lives at index 0.
@@ -60,6 +75,27 @@ type Watcher struct {
 	// onRecord, when set, is called for every observed record (any framing).
 	// The absence ledger rides this seam. Set before Run; not synchronized.
 	onRecord func(topic string, at time.Time)
+
+	// lastOK is the last moment the broker answered anything: a fetch with
+	// no errors, or an introspection tick that succeeded. Run reads it on
+	// every poll error to decide whether the wire is merely noisy or gone.
+	// Guarded by mu because the introspection loop writes it from its own
+	// goroutine.
+	lastOK time.Time
+}
+
+// touch records that the broker just answered.
+func (w *Watcher) touch() {
+	w.mu.Lock()
+	w.lastOK = time.Now()
+	w.mu.Unlock()
+}
+
+// silentFor is how long the broker has answered nothing.
+func (w *Watcher) silentFor() time.Duration {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return time.Since(w.lastOK)
 }
 
 // OnRecord registers a per-record callback. MUST be called before Run.
@@ -93,6 +129,7 @@ func New(ctx context.Context, brokers []string, log *slog.Logger) (*Watcher, err
 		consuming:     map[string]bool{},
 		producersSeen: map[string]time.Time{},
 		groupTopics:   map[string][]string{},
+		lastOK:        time.Now(), // construction is about to prove the wire
 	}
 	// subscribe to the current topic set before returning, so a watcher that
 	// cannot even list topics fails construction loudly instead of running blind
@@ -148,9 +185,14 @@ func (w *Watcher) addNewTopics(ctx context.Context) error {
 // introspection tick in its own goroutine. Both are hm's hot paths and are
 // instrumented as such (hm_watch_*, hm_introspect_*) — if hm is the
 // problem, hm says so.
-func (w *Watcher) Run(ctx context.Context, tick time.Duration) {
+// Run consumes until ctx ends (returns nil) or the wire has been silent
+// past DeadAfter (returns ErrWireLost). The introspection loop it starts is
+// tied to ctx, so a caller that rebuilds the watcher after ErrWireLost
+// MUST cancel the context it passed here first, or the old tick keeps
+// running against a closed client.
+func (w *Watcher) Run(ctx context.Context, tick time.Duration) error {
 	if w == nil {
-		return
+		return nil
 	}
 	go w.introspectLoop(ctx, tick)
 	for {
@@ -158,25 +200,32 @@ func (w *Watcher) Run(ctx context.Context, tick time.Duration) {
 		// never waits on a fetch
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		default:
 		}
 		// PollFetches blocks until records arrive, an error surfaces, or ctx
 		// cancels. Errors arrive per topic-partition: log and count each,
 		// then poll again — kgo owns retry and backoff internally, so this
-		// loop's only job on error is to record that it happened and keep
-		// observing everything else.
+		// loop's job on error is to record that it happened, keep observing
+		// everything else, and notice when "everything else" has been
+		// nothing for a long time.
 		fetches := w.client.PollFetches(ctx)
 		if errs := fetches.Errors(); len(errs) > 0 {
 			if ctx.Err() != nil {
-				return
+				return nil
 			}
 			for _, e := range errs {
 				metrics.Inc("hm_watch_poll_errors_total")
 				w.log.Error("watch poll error", "topic", e.Topic, "err", e.Err)
 			}
+			if silent := w.silentFor(); silent > DeadAfter {
+				w.log.Error("kafka wire lost; giving this client up",
+					"silent_for", silent.String(), "dead_after", DeadAfter.String())
+				return ErrWireLost
+			}
 			continue
 		}
+		w.touch()
 		fetches.EachRecord(func(rec *kgo.Record) {
 			w.observe(rec)
 		})
@@ -220,6 +269,10 @@ func (w *Watcher) introspectLoop(ctx context.Context, tick time.Duration) {
 		if err := w.introspect(ctx); err != nil {
 			metrics.Inc("hm_introspect_errors_total")
 			w.log.Error("introspection tick failed", "err", err)
+		} else {
+			// a tick that listed topics and described groups is the broker
+			// answering; a quiet wire stays alive on this alone
+			w.touch()
 		}
 		metrics.Add("hm_introspect_duration_ms_total", time.Since(start).Milliseconds())
 		metrics.Inc("hm_introspect_ticks_total")

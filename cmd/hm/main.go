@@ -1,12 +1,14 @@
 // hm is the mesh's hall monitor: the resident that checks services actually
 // do on the wire what they claim to do. v0 is the passive half: a fleet
-// citizen (heartbeat, /health, /metrics, JSON logs) running the
+// citizen (heartbeat, /health, /live, /metrics, JSON logs) running the
 // consume-everything loop, broker introspection, the absence ledger, and
 // the truth report at /truth. See doc/rfc-hall-monitor.md for the design.
 package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -19,10 +21,23 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/janearc/hall-monitor/pkg/config"
+	"github.com/janearc/hall-monitor/pkg/connect"
 	"github.com/janearc/hall-monitor/pkg/ledger"
+	"github.com/janearc/hall-monitor/pkg/metrics"
 	"github.com/janearc/hall-monitor/pkg/report"
 	"github.com/janearc/hall-monitor/pkg/server"
 	"github.com/janearc/hall-monitor/pkg/watch"
+)
+
+// the connect-attempt counter, by OUTCOME per fleet policy, and the
+// connected gauge. Registered at zero before the first attempt so the first
+// failure lands on an existing series -- a counter that appears only once
+// something has gone wrong is invisible exactly when it is new.
+const (
+	attemptsOK    = `hm_kafka_connect_attempts_total{outcome="ok"}`
+	attemptsError = `hm_kafka_connect_attempts_total{outcome="error"}`
+	connected     = `hm_kafka_connected`
+	wireLost      = `hm_kafka_wire_lost_total`
 )
 
 // main parses the command line and runs the daemon.
@@ -40,8 +55,8 @@ func main() {
 	}
 }
 
-// run is the daemon: logging, config, the control port, the heartbeat, and
-// (as the stack above this lands) the watch loops; blocks until signalled.
+// run is the daemon: logging, config, the control port, and the wire loop;
+// blocks until signalled.
 func run() error {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
@@ -52,52 +67,123 @@ func run() error {
 	cfg := config.FromEnv()
 	srv := server.New(cfg.HTTPAddr, logger)
 
-	// The publisher is best-effort per fleet convention: a nil publisher is a
-	// no-op and hm keeps running — but unlike other froods, hm's whole job is
-	// the wire, so no broker is a DEGRADED state and /health says so loudly
-	// (fail loud, doctrine: never present uncertain state as truth).
-	var pub *emit.Publisher
+	metrics.Add(attemptsOK, 0)
+	metrics.Add(attemptsError, 0)
+	metrics.Add(wireLost, 0)
+	metrics.Set(connected, 0)
+
+	// /truth is registered now, before the control port serves, and answers
+	// 503 until the wire loop hands it a watcher. The absence ledger lives
+	// for the whole process: a reconnection must not forget what it saw.
+	truth := &report.Gate{}
+	srv.Handle("/truth", truth)
+	led := ledger.New()
+
 	if len(cfg.KafkaBrokers) == 0 {
+		// no broker named is a configuration fault, not an outage: nothing
+		// to retry against, and /health says so for as long as it runs
 		srv.SetDegraded("no kafka brokers configured (HM_KAFKA_BROKERS empty): hm has no eyes")
 		logger.Error("hm is up with no broker configured; health reports degraded")
 	} else {
-		p, err := emit.New(ctx, cfg.KafkaBrokers, cfg.SchemaRegistryURL)
-		if err != nil {
-			// the health reason is a stable operator-facing sentence; the raw
-			// error carries addresses and library noise and belongs in the log
-			srv.SetDegraded("kafka unreachable at startup (see logs)")
-			logger.Error("kafka unreachable at startup; health reports degraded", "err", err)
-		} else {
-			pub = p
-			defer pub.Close()
-		}
-
-		// The watch loops: consume-everything + the introspection tick. A
-		// watcher that cannot connect is the same degraded state as no broker.
-		w, err := watch.New(ctx, cfg.KafkaBrokers, logger)
-		if err != nil {
-			srv.SetDegraded("watcher could not connect to kafka (see logs)")
-			logger.Error("watcher could not connect; health reports degraded", "err", err)
-		} else {
-			// shutdown leaves the consumer group cleanly so the broker
-			// rebalances immediately; fresh context because the daemon ctx
-			// is already cancelled by the time this defer runs
-			defer func() {
-				leaveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				w.Close(leaveCtx)
-			}()
-			// the absence ledger rides the record seam; the truth report
-			// reads both and serves on the control port, current at ask time
-			led := ledger.New()
-			w.OnRecord(led.Observe)
-			srv.Handle("/truth", report.Handler(w, led))
-			go w.Run(ctx, cfg.IntrospectTick)
-		}
+		srv.SetDegraded("kafka not connected yet")
+		go wireLoop(ctx, cfg, srv, truth, led, logger)
 	}
-
-	go frood.Heartbeat(ctx, pub, "hm", observabilityproto.Schema, cfg.HeartbeatInterval, logger)
 
 	logger.Info("hm starting", "brokers", len(cfg.KafkaBrokers), "addr", cfg.HTTPAddr)
 	return srv.Serve(ctx)
+}
+
+// session is one established wire: the publisher the heartbeat rides and
+// the watcher the truth report reads. Both die together.
+type session struct {
+	pub *emit.Publisher
+	w   *watch.Watcher
+}
+
+// wireLoop is the whole lifecycle of hm's connection to kafka, forever:
+// connect (bounded backoff, every attempt counted and logged), serve until
+// the watcher reports the wire lost, tear down, mark degraded, connect
+// again. It returns only when ctx ends. Until 2026-08-22 this was one dial
+// at startup; the VM restart that day scheduled hm before kafka's DNS
+// existed and hm ran blind for forty minutes under a green liveness probe.
+func wireLoop(ctx context.Context, cfg config.Config, srv *server.Server, truth *report.Gate,
+	led *ledger.Ledger, logger *slog.Logger) {
+	for ctx.Err() == nil {
+		var s session
+		err := connect.Loop(ctx, connect.Defaults, func(ctx context.Context) error {
+			got, err := dial(ctx, cfg, logger)
+			if err != nil {
+				return err
+			}
+			s = got
+			return nil
+		}, func(a connect.Attempt) {
+			if a.Err == nil {
+				metrics.Inc(attemptsOK)
+				logger.Info("kafka connected", "attempt", a.N)
+				return
+			}
+			metrics.Inc(attemptsError)
+			logger.Error("kafka connect attempt failed; will retry",
+				"attempt", a.N, "err", a.Err, "next_try_in", a.Next.String())
+		})
+		if err != nil {
+			return // ctx ended during connect
+		}
+
+		// the wire is up: say so on every surface that reports it
+		metrics.Set(connected, 1)
+		srv.SetOK()
+		s.w.OnRecord(led.Observe)
+		truth.Set(report.Handler(s.w, led))
+
+		// this session's context: cancelling it stops the heartbeat and the
+		// introspection tick, which is the contract Run's comment states
+		sctx, cancel := context.WithCancel(ctx)
+		go frood.Heartbeat(sctx, s.pub, "hm", observabilityproto.Schema, cfg.HeartbeatInterval, logger)
+		runErr := s.w.Run(sctx, cfg.IntrospectTick)
+		cancel()
+
+		// the wire is down, or we are: say that first, then clean up
+		truth.Clear()
+		metrics.Set(connected, 0)
+		if errors.Is(runErr, watch.ErrWireLost) {
+			metrics.Inc(wireLost)
+			srv.SetDegraded("kafka connection lost; reconnecting (see logs)")
+			logger.Error("kafka wire lost; reconnecting", "err", runErr)
+		}
+		teardown(s, logger)
+	}
+}
+
+// dial builds one session: the publisher and the watcher, or neither. A
+// half-session (publisher up, watcher down) is torn down rather than kept,
+// so every session is whole and the heartbeat never reports GREEN from a
+// process that cannot see.
+func dial(ctx context.Context, cfg config.Config, logger *slog.Logger) (session, error) {
+	pub, err := emit.New(ctx, cfg.KafkaBrokers, cfg.SchemaRegistryURL)
+	if err != nil {
+		return session{}, fmt.Errorf("publisher: %w", err)
+	}
+	w, err := watch.New(ctx, cfg.KafkaBrokers, logger)
+	if err != nil {
+		pub.Close()
+		return session{}, fmt.Errorf("watcher: %w", err)
+	}
+	return session{pub: pub, w: w}, nil
+}
+
+// teardown leaves the consumer group cleanly and releases both clients. A
+// fresh context because the one that ran the session is already cancelled;
+// the explicit leave matters (see Watcher.Close).
+func teardown(s session, logger *slog.Logger) {
+	leaveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if s.w != nil {
+		s.w.Close(leaveCtx)
+	}
+	if s.pub != nil {
+		s.pub.Close()
+	}
+	logger.Info("kafka session closed")
 }

@@ -1,4 +1,4 @@
-// Package server is hm's control port: /health and /metrics, the two
+// Package server is hm's control port: /health, /live and /metrics, the
 // endpoints every fleet daemon owes the mesh. Nothing else lives here; hm's
 // verdict surfaces arrive with the truth report, not before.
 package server
@@ -33,8 +33,8 @@ type Server struct {
 	// degraded is a bool because degraded IS a bool; reason is the separate
 	// human-readable why. A degraded state without a reason is banned (fail
 	// loud means saying what failed), which SetDegraded enforces by taking
-	// the reason as its argument. Mutex-guarded so runtime degradation
-	// (broker loss mid-flight, later) can write while /health reads.
+	// the reason as its argument. Mutex-guarded because the connect loop
+	// writes it on every wire transition while /health reads.
 	mu       sync.RWMutex
 	degraded bool
 	reason   string
@@ -48,6 +48,7 @@ func New(addr string, log *slog.Logger) *Server {
 	s := &Server{log: log, start: time.Now()}
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("/health", s.handleHealth)
+	s.mux.HandleFunc("/live", s.handleLive)
 	s.mux.Handle("/metrics", metrics.Handler())
 	s.http = &http.Server{Addr: addr, Handler: s.mux, ReadHeaderTimeout: 5 * time.Second}
 	return s
@@ -67,21 +68,51 @@ func (s *Server) SetDegraded(reason string) {
 	s.mu.Unlock()
 }
 
-// handleHealth serves the /health payload, degraded state included.
+// SetOK clears the degraded state. The connect loop calls it when the wire
+// is (re)established; nothing else should, because nothing else knows.
+func (s *Server) SetOK() {
+	s.mu.Lock()
+	s.degraded = false
+	s.reason = ""
+	s.mu.Unlock()
+}
+
+// handleHealth serves the /health payload. Degraded is 503 WITH the body,
+// not 200 with a sad status: a probe or a scraper that reads only the code
+// must see the truth too. For forty minutes on 2026-08-22 a 200 here kept
+// a blind hm "1/1 Running" while it watched nothing; the code is the part
+// of this answer that kubernetes reads.
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	h := Health{
 		Service:       "hm",
 		Status:        "ok",
 		UptimeSeconds: int64(time.Since(s.start).Seconds()),
 	}
+	code := http.StatusOK
 	s.mu.RLock()
 	if s.degraded {
 		h.Status = "degraded"
 		h.Detail = s.reason
+		code = http.StatusServiceUnavailable
 	}
 	s.mu.RUnlock()
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(h)
+}
+
+// handleLive answers 200 whenever the process can answer at all. It is the
+// liveness probe's target and deliberately knows nothing about the wire: a
+// degraded hm is RETRYING, and restarting a process that is correctly
+// retrying does not bring the broker back -- it only resets the backoff and
+// throws away the attempt count. Readiness is /health; liveness is this.
+func (s *Server) handleLive(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"service":        "hm",
+		"alive":          true,
+		"uptime_seconds": int64(time.Since(s.start).Seconds()),
+	})
 }
 
 // Serve blocks until ctx is cancelled, then drains with a short grace period.
