@@ -28,10 +28,22 @@ func Inc(name string) {
 	Add(name, 1)
 }
 
-// Add adds n to the named counter.
+// Add adds n to the named counter. Add(name, 0) registers a series at zero,
+// which is how a counter that must exist BEFORE its first event (a failure
+// count) gets onto /metrics rather than appearing only after the first
+// failure -- an absent series and a zero series read the same to a human
+// and differently to a rule.
 func Add(name string, n int64) {
 	mu.Lock()
 	counters[name] += n
+	mu.Unlock()
+}
+
+// Set assigns the named series outright: a gauge, for the few values that
+// are a state rather than a count (hm_kafka_connected is 0 or 1).
+func Set(name string, v int64) {
+	mu.Lock()
+	counters[name] = v
 	mu.Unlock()
 }
 

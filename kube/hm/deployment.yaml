@@ -61,15 +61,34 @@ spec:
               value: "http://schema-registry:8081"
             - name: HM_HTTP_ADDR
               value: ":8090"
-          # liveness only: a degraded hm (broker gone mid-flight) must stay
-          # up and KEEP SAYING degraded -- restarting it would be the
-          # present-uncertain-state-as-truth failure with extra steps
+          # Two probes, two questions. /live answers "is the process
+          # there" and nothing else, so a degraded hm -- which since
+          # 2026-08-22 is a RETRYING hm -- is never restarted for being
+          # degraded: restarting does not bring the broker back, it only
+          # resets the backoff and throws the attempt count away.
+          #
+          # /health is the readiness probe and answers 503 while the wire
+          # is down, so a blind hm shows 0/1 READY in `kubectl get pods`.
+          # Before this, liveness was /health and /health was 200 with
+          # "degraded" in the body: on 2026-08-22 hm came up before kafka's
+          # DNS, failed its one dial, and sat 1/1 Running and watching
+          # nothing for forty minutes. The probe read the code, the code
+          # said fine. The comment here used to say a degraded hm must
+          # "stay up and keep saying degraded"; it does, on this probe --
+          # what it no longer does is say READY while saying it.
           livenessProbe:
             httpGet:
-              path: /health
+              path: /live
               port: control
             initialDelaySeconds: 5
             periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: control
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            failureThreshold: 2
           resources:
             requests:
               cpu: 50m
