@@ -254,6 +254,21 @@ func (a *Authority) Snapshot() []Row {
 	return rows
 }
 
+// SnapshotVerdicts returns the authorized table as lease.v1.LeaseVerdict,
+// sorted by service -- the same verdicts the bus carries, built by the same
+// verdictLocked, so /truth/v1 quotes the authority rather than paraphrasing
+// it. One derivation, two surfaces.
+func (a *Authority) SnapshotVerdicts() []*leasepb.LeaseVerdict {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	out := make([]*leasepb.LeaseVerdict, 0, len(a.services))
+	for name, s := range a.services {
+		out = append(out, a.verdictLocked(name, s))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].GetServiceName() < out[j].GetServiceName() })
+	return out
+}
+
 // stateWord renders the enum for humans; the glance is the requirement.
 func stateWord(s leasepb.LeaseState) string {
 	switch s {
