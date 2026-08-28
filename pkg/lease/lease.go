@@ -196,13 +196,16 @@ func (a *Authority) emit(v *leasepb.LeaseVerdict) {
 	metrics.Inc("hm_lease_verdicts_total")
 }
 
-// Row is one line of the authorized table, shaped for /truth.
+// Row is one line of the authorized table, shaped for /truth. ExpiresAt is a
+// pointer because a zero time.Time defeats omitempty and renders as year one
+// in the very table meant to be read at a glance -- nil means "no expiry
+// stated", which is the truthful rendering of a cadence not yet learned.
 type Row struct {
-	Service       string    `json:"service"`
-	State         string    `json:"state"`
-	LastHeartbeat time.Time `json:"last_heartbeat"`
-	ExpiresAt     time.Time `json:"expires_at,omitempty"`
-	CadenceMS     int64     `json:"cadence_ms,omitempty"`
+	Service       string     `json:"service"`
+	State         string     `json:"state"`
+	LastHeartbeat time.Time  `json:"last_heartbeat"`
+	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
+	CadenceMS     int64      `json:"cadence_ms,omitempty"`
 }
 
 // Snapshot returns the authorized table, sorted by service so the at-a-glance
@@ -219,7 +222,8 @@ func (a *Authority) Snapshot() []Row {
 			CadenceMS:     s.cadence.Milliseconds(),
 		}
 		if s.cadence > 0 && s.state != leasepb.LeaseState_LEASE_STATE_EXPIRED {
-			r.ExpiresAt = s.last.Add(time.Duration(graceCadences) * s.cadence)
+			exp := s.last.Add(time.Duration(graceCadences) * s.cadence)
+			r.ExpiresAt = &exp
 		}
 		rows = append(rows, r)
 	}

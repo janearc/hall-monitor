@@ -59,7 +59,7 @@ func TestFirstBeatAuthorizesAndEmitsOnce(t *testing.T) {
 	if len(rows) != 1 || rows[0].Service != "flipr" || rows[0].State != "authorized" {
 		t.Fatalf("want one authorized flipr row, got %+v", rows)
 	}
-	if rows[0].CadenceMS != 0 || !rows[0].ExpiresAt.IsZero() {
+	if rows[0].CadenceMS != 0 || rows[0].ExpiresAt != nil {
 		t.Fatalf("single beat must carry no cadence and no expiry: %+v", rows[0])
 	}
 	if len(pub.verdicts) != 1 || pub.verdicts[0].GetState() != leasepb.LeaseState_LEASE_STATE_AUTHORIZED {
@@ -82,7 +82,7 @@ func TestCadenceIsLearnedFromGaps(t *testing.T) {
 	if rows[0].CadenceMS != 20000 {
 		t.Fatalf("first gap should set cadence: want 20000ms got %d", rows[0].CadenceMS)
 	}
-	if rows[0].ExpiresAt.IsZero() {
+	if rows[0].ExpiresAt == nil {
 		t.Fatal("with a cadence learned, expiry must be stated")
 	}
 	// EWMA: 0.7*20s + 0.3*40s = 26s
