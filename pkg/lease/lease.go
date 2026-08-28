@@ -43,6 +43,15 @@ type Publisher interface {
 // for silence, applied to topics and to citizens alike.
 const graceCadences = 3
 
+// expiringMargin is where EXPIRING begins, in cadences. NOT 1.0, and the
+// reason cost a live flap: the EWMA learns a service's cadence essentially
+// EXACTLY (hm's read 14999ms against a 15s interval), so a 1.0 threshold
+// marks every second between beats past the cadence as EXPIRING and flips
+// back on the beat -- 50 verdicts where 4 belonged, and the operator watching
+// the table saw her judge expiring on schedule. Half a cadence of margin
+// absorbs jitter; genuinely missed beats still surface well before EXPIRED.
+const expiringMargin = 1.5
+
 // svc is one service's lease bookkeeping.
 type svc struct {
 	last    time.Time
@@ -111,10 +120,20 @@ func (a *Authority) Observe(topic string, at time.Time, value []byte) {
 	if !s.last.IsZero() {
 		gap := at.Sub(s.last)
 		if gap > 0 {
-			if s.cadence == 0 {
+			switch {
+			case s.cadence == 0:
 				s.cadence = gap
-			} else {
-				// EWMA, 70/30: steady against jitter, alive to a real change.
+			case gap > s.cadence:
+				// GROW FAST: a longer gap is adopted whole. Judging a service
+				// against a cadence shorter than the one it just demonstrated
+				// only manufactures false EXPIRING.
+				s.cadence = gap
+			default:
+				// SHRINK SLOW: short gaps arrive in bursts during rollouts,
+				// when two pods beat under one service name and interleave --
+				// an EWMA that trusted them halved the learned cadence and
+				// flapped the table until it re-learned. 70/30 forgets them
+				// over many beats instead.
 				s.cadence = time.Duration(0.7*float64(s.cadence) + 0.3*float64(gap))
 			}
 		}
@@ -148,7 +167,7 @@ func (a *Authority) Tick(now time.Time) {
 		switch {
 		case gap > time.Duration(graceCadences)*s.cadence:
 			want = leasepb.LeaseState_LEASE_STATE_EXPIRED
-		case gap > s.cadence:
+		case float64(gap) > expiringMargin*float64(s.cadence):
 			want = leasepb.LeaseState_LEASE_STATE_EXPIRING
 		default:
 			want = leasepb.LeaseState_LEASE_STATE_AUTHORIZED

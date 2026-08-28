@@ -85,10 +85,16 @@ func TestCadenceIsLearnedFromGaps(t *testing.T) {
 	if rows[0].ExpiresAt == nil {
 		t.Fatal("with a cadence learned, expiry must be stated")
 	}
-	// EWMA: 0.7*20s + 0.3*40s = 26s
+	// a LONGER gap is adopted whole (grow fast): 40s replaces 20s outright
 	a.Observe(frood.TopicObservability, t0.Add(60*time.Second), beat(t, "kingfisher"))
-	if got := a.Snapshot()[0].CadenceMS; got != 26000 {
-		t.Fatalf("EWMA: want 26000ms got %d", got)
+	if got := a.Snapshot()[0].CadenceMS; got != 40000 {
+		t.Fatalf("grow-fast: want 40000ms got %d", got)
+	}
+	// a SHORTER gap shrinks slowly (rollout double-beats must not halve the
+	// cadence): 0.7*40s + 0.3*10s = 31s
+	a.Observe(frood.TopicObservability, t0.Add(70*time.Second), beat(t, "kingfisher"))
+	if got := a.Snapshot()[0].CadenceMS; got != 31000 {
+		t.Fatalf("shrink-slow: want 31000ms got %d", got)
 	}
 }
 
@@ -99,13 +105,14 @@ func TestSilenceDecaysThroughExpiringToExpired(t *testing.T) {
 	a.Observe(frood.TopicObservability, t0.Add(10*time.Second), beat(t, "flipr"))
 	pub.verdicts = nil // only the decay interests this test
 
-	// inside one cadence: still authorized, no chatter
-	a.Tick(t0.Add(15 * time.Second))
+	// at exactly one cadence past the beat: still authorized -- the margin
+	// exists precisely so an exactly-learned cadence cannot flap
+	a.Tick(t0.Add(20 * time.Second))
 	if n := len(pub.verdicts); n != 0 {
 		t.Fatalf("no transition inside one cadence, got %d verdicts", n)
 	}
-	// past one cadence: expiring, one verdict
-	a.Tick(t0.Add(25 * time.Second))
+	// past the margin (1.5 cadences): expiring, one verdict
+	a.Tick(t0.Add(26 * time.Second))
 	if len(pub.verdicts) != 1 || pub.verdicts[0].GetState() != leasepb.LeaseState_LEASE_STATE_EXPIRING {
 		t.Fatalf("want one EXPIRING verdict, got %+v", pub.verdicts)
 	}
