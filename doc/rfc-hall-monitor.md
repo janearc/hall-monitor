@@ -382,9 +382,9 @@ Swept into this design at operator direction:
 
 | Rung | Scope | When |
 |------|-------|------|
-| v0 | this doc ratified; passive resident on the network; truth report; quota lever; floater roster pane + alarm path | today (13) |
-| v1 | attestation: SASL listener, SA-scoped SCRAM, scope declarations, signed-tag ceremony with one-click tooling + matching runbook, broker durability restart test, mint flow, registration carries build identity, kafka-user enumeration + per-repo migration issues | next sprint, named |
-| v2 | leases, surrogate sessions, promotion-by-ACL, lease stream, untrusted mode (if ratified) | after v1 |
+| v0 | this doc ratified; passive resident on the network; truth report; contracted heartbeat. SHIPPED. Not built from the original v0 list: quota lever, floater roster pane, alarm path -- measured absent 2026-08-28, moved to v1 | today (13) |
+| v1 | quota lever, alarm path, operator surface (carried from v0); attestation: SASL listener, SA-scoped SCRAM, scope declarations, signed-tag ceremony with one-click tooling + matching runbook, broker durability restart test, mint flow, registration carries build identity, kafka-user enumeration + per-repo migration issues | next sprint, named |
+| v2 | leases: VISIBILITY FIRST, promoted to the active build by the operator 2026-08-28 -- "it should be visible at a glance who is authorized to be on the network." A lease is a contracted bus message; hm is the authority; /truth grows an authorized table; an unleased producer is a refusal-class finding; flipr and kingfisher are the first lessees. Enforcement (promotion-by-ACL, lease stream, surrogate sessions) follows visibility | active |
 | v3 | emergent-state classification on transcripts | after the metal proves out |
 
 **v0 definition of done**: the truth report exists, is machine-readable,
