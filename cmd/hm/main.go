@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/janearc/big-little-mesh/consume"
 	"github.com/janearc/big-little-mesh/emit"
 	blmflag "github.com/janearc/big-little-mesh/flag"
 	"github.com/janearc/big-little-mesh/frood"
@@ -171,7 +172,10 @@ func wireLoop(ctx context.Context, cfg config.Config, srv *server.Server, truth,
 		// the lease authority is session-scoped like the publisher it emits
 		// through: a new session gets a fresh table, judged from the wire it
 		// is actually watching rather than remembered from one it lost.
-		auth := lease.New(sctx, s.pub, logger)
+		// The resolver is session-scoped WITH it; the id->subject cache is
+		// cheap to rebuild and a stale registry answer cannot outlive the
+		// wire that produced it.
+		auth := lease.New(sctx, s.pub, consume.NewResolver(cfg.SchemaRegistryURL), logger)
 		s.w.OnRecordValue(auth.Observe)
 		truth.Set(report.Handler(s.w, led, auth))
 		truthV1.Set(report.HandlerV1(s.w, led, auth))

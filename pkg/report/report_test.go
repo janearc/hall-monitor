@@ -97,7 +97,7 @@ func TestBuildNilLedger(t *testing.T) {
 func TestAuthorizedTableAndLeaseExpiryFinding(t *testing.T) {
 	src := fakeSource{producers: map[string]time.Time{}, groups: map[string][]string{}}
 
-	auth := lease.New(context.Background(), nil, slog.Default())
+	auth := lease.New(context.Background(), nil, nil, slog.Default())
 	t0 := time.Now().Add(-10 * time.Minute)
 	auth.Observe(frood.TopicObservability, t0, framedBeat(t, "flipr"))
 	auth.Observe(frood.TopicObservability, t0.Add(10*time.Second), framedBeat(t, "flipr"))

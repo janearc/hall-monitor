@@ -29,6 +29,7 @@ import (
 	leasepb "github.com/janearc/big-little-mesh/gen/go/lease/v1"
 	obspb "github.com/janearc/big-little-mesh/gen/go/observability/v1"
 	leaseproto "github.com/janearc/big-little-mesh/proto/lease/v1"
+	obsproto "github.com/janearc/big-little-mesh/proto/observability/v1"
 
 	"github.com/janearc/hall-monitor/pkg/metrics"
 )
@@ -60,10 +61,22 @@ type svc struct {
 	beats   int64 // heartbeats observed this session -- the operator asked for the count
 }
 
+// SchemaResolver is the slice of consume.Resolver the authority needs -- an
+// interface so tests fake the registry without HTTP.
+type SchemaResolver interface {
+	Subject(ctx context.Context, id int32) (string, error)
+}
+
+// resolverFallback counts ticks of the legacy residue discriminator running
+// because the registry did not answer. Registered at zero in New, per fleet
+// policy: the failure mode is visible BEFORE the first failure.
+const resolverFallback = "hm_lease_resolver_fallback_total"
+
 // Authority judges heartbeats into lease state. One per hm.
 type Authority struct {
 	ctx context.Context
 	pub Publisher
+	res SchemaResolver
 	log *slog.Logger
 
 	mu       sync.RWMutex
@@ -72,33 +85,56 @@ type Authority struct {
 
 // New returns an authority. ctx scopes verdict emission; a nil pub means
 // judge-but-do-not-emit, which keeps the table alive while the wire is being
-// repaired rather than coupling visibility to emission.
-func New(ctx context.Context, pub Publisher, log *slog.Logger) *Authority {
-	return &Authority{ctx: ctx, pub: pub, log: log, services: map[string]*svc{}}
+// repaired rather than coupling visibility to emission. A nil res means no
+// registry: discrimination falls back to unknown-field residue permanently,
+// which is exactly the pre-registry behavior.
+func New(ctx context.Context, pub Publisher, res SchemaResolver, log *slog.Logger) *Authority {
+	metrics.Add(resolverFallback, 0)
+	return &Authority{ctx: ctx, pub: pub, res: res, log: log, services: map[string]*svc{}}
 }
 
 // Observe is wired to the watcher's record hook. It ignores every topic but
-// the observability topic, strips the schema-registry frame, and treats a
-// record that unmarshals as a heartbeat as a renewal.
+// the observability topic, parses the schema-registry frame, and treats a
+// record the REGISTRY says is a heartbeat as a renewal.
 //
-// Discrimination note, stated because it is load-bearing: LeaseVerdict rides
-// the SAME topic, and hm must not renew a lease off its own verdict. proto3
-// does NOT error on a wire-type mismatch -- it preserves the field as UNKNOWN
-// (the first draft of this file claimed otherwise; the test caught it). So the
-// discriminator is the unknowns: a true heartbeat decodes with ZERO unknown
-// fields, while a verdict leaves its mismatched field 3 and its field 6 there.
-// This breaks the day the heartbeat schema grows a field an old hm has not
-// vendored -- conservative refusal, but leases would stall on schema evolution
-// until hm rebuilds. The registry-aware consumer (schema id resolved to a
-// subject) is the durable fix and replaces this check when it lands.
+// Discrimination, primary path: the frame's schema id resolves to a subject,
+// and under RecordNameStrategy the subject IS the message name -- so "is this
+// a heartbeat" is the registry's answer, not an inference. Unknown fields are
+// then tolerated on purpose: with the subject established, residue is schema
+// evolution (a field this build has not vendored), and leases must not stall
+// on it. That was the exact failure the old discriminator carried.
+//
+// Fallback path, registry silent: the legacy unknown-field residue check --
+// LeaseVerdict rides the SAME topic, proto3 preserves wire-type mismatches as
+// UNKNOWN rather than erroring (the first draft claimed otherwise; the test
+// caught it), so a record with residue is refused as not-a-pure-heartbeat.
+// Conservative, held for months, and a registry outage must not stall
+// leases: silence degrades to the old behavior, never to a stall. The
+// fallback counter exists from zero so the degraded mode is visible.
 func (a *Authority) Observe(topic string, at time.Time, value []byte) {
 	if topic != frood.TopicObservability {
 		return
 	}
-	payload, err := consume.StripFrame(value)
+	id, payload, err := consume.ParseFrame(value)
 	if err != nil {
 		return // not schema-registry framed; not a heartbeat
 	}
+	if a.res != nil {
+		subject, rerr := a.res.Subject(a.ctx, id)
+		if rerr == nil {
+			if subject != obsproto.SubjectServiceHealthHeartbeat {
+				return // the registry names it; it is not a heartbeat
+			}
+			var hb obspb.ServiceHealthHeartbeat
+			if proto.Unmarshal(payload, &hb) != nil {
+				return // registry says heartbeat, bytes disagree: refuse
+			}
+			a.renew(hb.GetServiceName(), at)
+			return
+		}
+		metrics.Inc(resolverFallback)
+	}
+
 	var hb obspb.ServiceHealthHeartbeat
 	if err := proto.Unmarshal(payload, &hb); err != nil {
 		return // malformed payload; not a renewal
@@ -106,7 +142,13 @@ func (a *Authority) Observe(topic string, at time.Time, value []byte) {
 	if len(hb.ProtoReflect().GetUnknown()) > 0 {
 		return // decodes, but not as a pure heartbeat -- a verdict or a future subject
 	}
-	name := hb.GetServiceName()
+	a.renew(hb.GetServiceName(), at)
+}
+
+// renew is one heartbeat landing: cadence learning, state transition, and
+// the verdict emit -- the renewal body Observe dispatches into once the
+// record is established to BE a heartbeat.
+func (a *Authority) renew(name string, at time.Time) {
 	if name == "" {
 		return
 	}
