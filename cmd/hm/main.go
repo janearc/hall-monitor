@@ -177,7 +177,7 @@ func wireLoop(ctx context.Context, cfg config.Config, srv *server.Server, truth 
 				}
 			}
 		}()
-		go frood.Heartbeat(sctx, s.pub, "hm", observabilityproto.Schema, cfg.HeartbeatInterval, logger)
+		go frood.Heartbeat(sctx, s.pub, "hm", cfg.HeartbeatInterval, logger)
 		runErr := s.w.Run(sctx, cfg.IntrospectTick)
 		cancel()
 

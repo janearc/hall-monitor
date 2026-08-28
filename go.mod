@@ -3,7 +3,7 @@ module github.com/janearc/hall-monitor
 go 1.26.4
 
 require (
-	github.com/janearc/big-little-mesh v0.0.0-20260828135536-d447c8935ae6
+	github.com/janearc/big-little-mesh v0.0.0-20260828151917-c30e41def17f
 	github.com/spf13/cobra v1.10.2
 	github.com/twmb/franz-go v1.21.3
 	github.com/twmb/franz-go/pkg/kadm v1.18.0
