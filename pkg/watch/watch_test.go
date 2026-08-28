@@ -96,3 +96,35 @@ func TestSnapshotCopies(t *testing.T) {
 		t.Fatal("snapshot shares the group slice")
 	}
 }
+
+// TestOffContractIsCountedNotJustLogged: the aggregate is the operator's
+// answer to "who is on the wire but not in agreement"; the per-record ERROR
+// alone once amplified into a 164MB self-collection loop.
+func TestOffContractIsCountedNotJustLogged(t *testing.T) {
+	w := &Watcher{
+		log:           slog.Default(),
+		producersSeen: map[string]time.Time{},
+		groupTopics:   map[string][]string{},
+	}
+	for i := 0; i < 3; i++ {
+		w.observe(&kgo.Record{Topic: "rogue.topic", Value: []byte("not a frame")})
+	}
+	w.observe(&kgo.Record{Topic: "delight.events", Value: []byte{0x00, 0x00, 0x00, 0x00, 0x07, 0x00, 0x01}})
+
+	counts, last := w.OffContract()
+	if counts["rogue.topic"] != 3 {
+		t.Fatalf("rogue.topic off-contract count = %d, want 3", counts["rogue.topic"])
+	}
+	if _, ok := counts["delight.events"]; ok {
+		t.Fatal("framed traffic must not count as off-contract")
+	}
+	if last["rogue.topic"].IsZero() {
+		t.Fatal("last off-contract time must be recorded")
+	}
+	// returned maps are copies: mutating them must not touch the watcher
+	counts["rogue.topic"] = 999
+	fresh, _ := w.OffContract()
+	if fresh["rogue.topic"] != 3 {
+		t.Fatal("OffContract returned a live reference, not a copy")
+	}
+}

@@ -5,6 +5,7 @@
 package report
 
 import (
+	"fmt"
 	"encoding/json"
 	"net/http"
 	"sort"
@@ -18,6 +19,10 @@ import (
 // groups consume which topics.
 type Source interface {
 	Snapshot() (producers map[string]time.Time, groups map[string][]string)
+	// OffContract is who is on the wire but NOT in agreement with the
+	// contracts: per-topic counts of un-frameable records, and when the last
+	// one arrived.
+	OffContract() (counts map[string]int64, last map[string]time.Time)
 }
 
 // TopicRow is one topic's truth.
@@ -33,6 +38,11 @@ type TopicRow struct {
 	Silent            bool  `json:"silent"`
 	ExpectedCadenceMS int64 `json:"expected_cadence_ms,omitempty"`
 	SilentForMS       int64 `json:"silent_for_ms,omitempty"`
+	// OffContractRecords: traffic on this topic that the contract system
+	// refused. Zero is the healthy state; nonzero names a producer that is on
+	// the network without being in agreement.
+	OffContractRecords int64      `json:"off_contract_records,omitempty"`
+	LastOffContract    *time.Time `json:"last_off_contract,omitempty"`
 }
 
 // Finding is one refusal-class row, self-contained for the assessment tier.
@@ -69,6 +79,7 @@ func Handler(src Source, led *ledger.Ledger, auth *lease.Authority) http.Handler
 // ledger, as of now.
 func Build(src Source, led *ledger.Ledger, auth *lease.Authority, now time.Time) Report {
 	producers, groups := src.Snapshot()
+	offCounts, offLast := src.OffContract()
 
 	// invert group->topics into topic->groups so each row carries its readers
 	consumersOf := map[string][]string{}
@@ -119,6 +130,16 @@ func Build(src Source, led *ledger.Ledger, auth *lease.Authority, now time.Time)
 			row.Silent = true
 			row.ExpectedCadenceMS = s.ExpectedCadence.Milliseconds()
 			row.SilentForMS = s.SilentFor.Milliseconds()
+		}
+		if n := offCounts[t]; n > 0 {
+			row.OffContractRecords = n
+			if at, ok := offLast[t]; ok {
+				row.LastOffContract = &at
+			}
+			r.Findings = append(r.Findings, Finding{
+				Class: "refusal", Kind: "off-contract", Topic: t,
+				Detail: fmt.Sprintf("%d records outside the contract system", n),
+			})
 		}
 		if row.Void {
 			r.Findings = append(r.Findings, Finding{

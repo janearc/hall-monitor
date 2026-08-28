@@ -48,6 +48,7 @@ type svc struct {
 	last    time.Time
 	cadence time.Duration // EWMA of observed heartbeat gaps; zero until two beats
 	state   leasepb.LeaseState
+	beats   int64 // heartbeats observed this session -- the operator asked for the count
 }
 
 // Authority judges heartbeats into lease state. One per hm.
@@ -119,6 +120,7 @@ func (a *Authority) Observe(topic string, at time.Time, value []byte) {
 		}
 	}
 	s.last = at
+	s.beats++
 	transitioned := s.state != leasepb.LeaseState_LEASE_STATE_AUTHORIZED
 	s.state = leasepb.LeaseState_LEASE_STATE_AUTHORIZED
 	verdict := a.verdictLocked(name, s)
@@ -203,6 +205,7 @@ func (a *Authority) emit(v *leasepb.LeaseVerdict) {
 type Row struct {
 	Service       string     `json:"service"`
 	State         string     `json:"state"`
+	Beats         int64      `json:"beats"`
 	LastHeartbeat time.Time  `json:"last_heartbeat"`
 	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
 	CadenceMS     int64      `json:"cadence_ms,omitempty"`
@@ -218,6 +221,7 @@ func (a *Authority) Snapshot() []Row {
 		r := Row{
 			Service:       name,
 			State:         stateWord(s.state),
+			Beats:         s.beats,
 			LastHeartbeat: s.last,
 			CadenceMS:     s.cadence.Milliseconds(),
 		}

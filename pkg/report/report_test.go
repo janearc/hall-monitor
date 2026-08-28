@@ -15,6 +15,7 @@ import (
 )
 
 type fakeSource struct {
+	offContract map[string]int64
 	producers map[string]time.Time
 	groups    map[string][]string
 }
@@ -22,6 +23,10 @@ type fakeSource struct {
 // Snapshot returns the fake's fixed state.
 func (f fakeSource) Snapshot() (map[string]time.Time, map[string][]string) {
 	return f.producers, f.groups
+}
+
+func (f fakeSource) OffContract() (map[string]int64, map[string]time.Time) {
+	return f.offContract, nil
 }
 
 func TestBuildFlagsVoidAndSilent(t *testing.T) {
