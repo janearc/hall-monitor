@@ -13,6 +13,10 @@ github.com/janearc/big-little-mesh v0.0.0-20260828211806-9d8110e44574 h1:AYTs0Te
 github.com/janearc/big-little-mesh v0.0.0-20260828211806-9d8110e44574/go.mod h1:dqKOE8eOM+K2kzhkccI3rsBWKt/xa6d30E5/eB5sue8=
 github.com/janearc/big-little-mesh v0.0.0-20260828213209-959e06fb3a26 h1:q07iGH9lX0VXDclLJ0bJa3yaJ8vcHmErEgB2saJYJZs=
 github.com/janearc/big-little-mesh v0.0.0-20260828213209-959e06fb3a26/go.mod h1:dqKOE8eOM+K2kzhkccI3rsBWKt/xa6d30E5/eB5sue8=
+github.com/janearc/big-little-mesh v0.0.0-20260828224244-2324cc7b0132 h1:3Zfo8hU2E9SxjEsIgH97NKXGiL4oiPPMU+QnSz4IiTQ=
+github.com/janearc/big-little-mesh v0.0.0-20260828224244-2324cc7b0132/go.mod h1:dqKOE8eOM+K2kzhkccI3rsBWKt/xa6d30E5/eB5sue8=
+github.com/janearc/big-little-mesh v0.0.0-20260828230615-e392c334e483 h1:+QiLD2MUnQGb0FAX0i4l53J9HzwX9OQnUon9GhuUYhQ=
+github.com/janearc/big-little-mesh v0.0.0-20260828230615-e392c334e483/go.mod h1:dqKOE8eOM+K2kzhkccI3rsBWKt/xa6d30E5/eB5sue8=
 github.com/klauspost/compress v1.18.6 h1:2jupLlAwFm95+YDR+NwD2MEfFO9d4z4Prjl1XXDjuao=
 github.com/klauspost/compress v1.18.6/go.mod h1:cwPg85FWrGar70rWktvGQj8/hthj3wpl0PGDogxkrSQ=
 github.com/pierrec/lz4/v4 v4.1.26 h1:GrpZw1gZttORinvzBdXPUXATeqlJjqUG/D87TKMnhjY=

@@ -215,7 +215,10 @@ func wireLoop(ctx context.Context, cfg config.Config, srv *server.Server, truth,
 // so every session is whole and the heartbeat never reports GREEN from a
 // process that cannot see.
 func dial(ctx context.Context, cfg config.Config, logger *slog.Logger) (session, error) {
-	pub, err := emit.New(ctx, cfg.KafkaBrokers, cfg.SchemaRegistryURL)
+	// the client id is hm's own frood identity, per the fleet convention that
+	// client-id names the frood -- it is what the broker's quota lever aims at,
+	// so hm answers to the same identity it judges everyone else by.
+	pub, err := emit.New(ctx, cfg.KafkaBrokers, cfg.SchemaRegistryURL, "hm")
 	if err != nil {
 		return session{}, fmt.Errorf("publisher: %w", err)
 	}
