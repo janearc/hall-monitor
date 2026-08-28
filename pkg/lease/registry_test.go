@@ -63,13 +63,13 @@ func TestRegistrySaysHeartbeat_ResidueTolerated(t *testing.T) {
 	evolved := frameID(t, 7, &obspb.ServiceHealthHeartbeat{ServiceName: "flipr"}, true)
 
 	withRegistry := New(context.Background(), nil,
-		&fakeResolver{subjects: map[int32]string{7: obsproto.SubjectServiceHealthHeartbeat}}, slog.Default())
+		&fakeResolver{subjects: map[int32]string{7: obsproto.SubjectServiceHealthHeartbeat}}, nil, slog.Default())
 	withRegistry.Observe(frood.TopicObservability, time.Now(), evolved)
 	if rows := withRegistry.Snapshot(); len(rows) != 1 || rows[0].Service != "flipr" {
 		t.Fatalf("registry-named heartbeat with residue must renew; rows=%+v", rows)
 	}
 
-	without := New(context.Background(), nil, nil, slog.Default())
+	without := New(context.Background(), nil, nil, nil, slog.Default())
 	without.Observe(frood.TopicObservability, time.Now(), evolved)
 	if rows := without.Snapshot(); len(rows) != 0 {
 		t.Fatalf("residue without a registry must refuse (legacy check); rows=%+v", rows)
@@ -81,7 +81,7 @@ func TestRegistrySaysHeartbeat_ResidueTolerated(t *testing.T) {
 func TestRegistrySaysVerdict_NotRenewed(t *testing.T) {
 	v := frameID(t, 8, &leasepb.LeaseVerdict{ServiceName: "flipr", Authority: "hm"}, false)
 	a := New(context.Background(), nil,
-		&fakeResolver{subjects: map[int32]string{8: leaseproto.SubjectLeaseVerdict}}, slog.Default())
+		&fakeResolver{subjects: map[int32]string{8: leaseproto.SubjectLeaseVerdict}}, nil, slog.Default())
 	a.Observe(frood.TopicObservability, time.Now(), v)
 	if rows := a.Snapshot(); len(rows) != 0 {
 		t.Fatalf("a verdict must never renew; rows=%+v", rows)
@@ -93,7 +93,7 @@ func TestRegistrySaysVerdict_NotRenewed(t *testing.T) {
 // refused. Degraded, visible, never stalled.
 func TestResolverOutage_FallsBackConservatively(t *testing.T) {
 	down := &fakeResolver{err: fmt.Errorf("registry unreachable")}
-	a := New(context.Background(), nil, down, slog.Default())
+	a := New(context.Background(), nil, down, nil, slog.Default())
 
 	a.Observe(frood.TopicObservability, time.Now(),
 		frameID(t, 7, &obspb.ServiceHealthHeartbeat{ServiceName: "kingfisher"}, false))

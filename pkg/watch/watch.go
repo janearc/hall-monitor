@@ -79,6 +79,28 @@ type Watcher struct {
 	// fires per record is a self-DoS.
 	offContract     map[string]int64
 	offContractLast map[string]time.Time
+	// offContractBy is the same offense attributed to a CITIZEN rather than a
+	// topic, keyed by the record key. The lease authority reads it to judge a
+	// service's standing, so a service cannot renew its lease while it is
+	// putting refused traffic on the wire.
+	//
+	// THE KEY IS SELF-REPORTED, exactly like client-id: adequate against bugs,
+	// which is the threat model, and useless against malice, which is the SASL
+	// tier and not this (rfc-hall-monitor 3.4, 3.5). A record whose key is
+	// empty is NOT attributed to anyone -- it stays counted at topic level in
+	// offContract above and costs no citizen its lease. Misattributing a lease
+	// death to an innocent service is the worst failure available here, worse
+	// than missing the offense entirely, so the unattributable case refuses to
+	// guess.
+	offContractBy     map[string]int64
+	offContractByLast map[string]time.Time
+	// offContractAnon counts, per topic, the refused records that named NO
+	// citizen. Kept apart from offContract because the two answer different
+	// operator questions: offContract is how bad it is, offContractAnon is how
+	// much of it the lease gate can act on at all. A topic whose refusals are
+	// entirely anonymous will never cost anyone a lease, and the operator
+	// should be able to see that rather than wonder why nothing happened.
+	offContractAnon map[string]int64
 
 	// onRecord, when set, is called for every observed record (any framing).
 	// The absence ledger rides this seam. Set before Run; not synchronized.
@@ -265,10 +287,22 @@ func (w *Watcher) observe(rec *kgo.Record) {
 		if w.offContract == nil {
 			w.offContract = map[string]int64{}
 			w.offContractLast = map[string]time.Time{}
+			w.offContractBy = map[string]int64{}
+			w.offContractByLast = map[string]time.Time{}
+			w.offContractAnon = map[string]int64{}
 		}
 		w.offContract[rec.Topic]++
 		n := w.offContract[rec.Topic]
 		w.offContractLast[rec.Topic] = obs.At
+		// attribute the offense to the citizen that signed it, when one did.
+		// The allocation here is on the REFUSED branch only -- well-framed
+		// traffic, which is the hot path, never reaches it.
+		if citizen := string(rec.Key); citizen != "" {
+			w.offContractBy[citizen]++
+			w.offContractByLast[citizen] = obs.At
+		} else {
+			w.offContractAnon[rec.Topic]++
+		}
 		w.mu.Unlock()
 		// First occurrence and every 1000th: the alarm without the self-DoS.
 		if n == 1 || n%1000 == 0 {
@@ -415,9 +449,10 @@ func (w *Watcher) Snapshot() (producers map[string]time.Time, groups map[string]
 }
 
 // OffContract returns, per topic, how many records arrived outside the
-// contract system and when the last one did: who is on the wire but not in
-// agreement. Empty maps when everyone agrees.
-func (w *Watcher) OffContract() (counts map[string]int64, last map[string]time.Time) {
+// contract system, when the last one did, and how many of them named no
+// citizen: who is on the wire but not in agreement. Empty maps when everyone
+// agrees. anon is a SUBSET of counts, never a separate population.
+func (w *Watcher) OffContract() (counts map[string]int64, last map[string]time.Time, anon map[string]int64) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	counts = make(map[string]int64, len(w.offContract))
@@ -428,7 +463,27 @@ func (w *Watcher) OffContract() (counts map[string]int64, last map[string]time.T
 	for t, at := range w.offContractLast {
 		last[t] = at
 	}
-	return counts, last
+	anon = make(map[string]int64, len(w.offContractAnon))
+	for t, n := range w.offContractAnon {
+		anon[t] = n
+	}
+	return counts, last, anon
+}
+
+// LastOffContract reports when the named service last put a record on the wire
+// that the contract system refused, and whether any refused record has been
+// attributed to it at all. This is the lease authority's read seam onto
+// standing: a targeted probe rather than a snapshot copy, because the authority
+// asks on every heartbeat and the answer is one map lookup.
+//
+// A service with no attributed offense reads false, which is also what an
+// unattributable offense produces -- see offContractBy on why that direction is
+// the safe one.
+func (w *Watcher) LastOffContract(service string) (time.Time, bool) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	at, ok := w.offContractByLast[service]
+	return at, ok
 }
 
 // frameSchemaID reads the Confluent SR wire header and returns the schema

@@ -31,6 +31,8 @@ func kindOf(kind string) truthpb.FindingKind {
 		return truthpb.FindingKind_FINDING_KIND_OFF_CONTRACT
 	case "lease-expired":
 		return truthpb.FindingKind_FINDING_KIND_LEASE_EXPIRED
+	case "renewal-refused":
+		return truthpb.FindingKind_FINDING_KIND_RENEWAL_REFUSED
 	default:
 		return truthpb.FindingKind_FINDING_KIND_UNSPECIFIED
 	}
@@ -73,10 +75,11 @@ func BuildV1(src Source, led *ledger.Ledger, auth *lease.Authority, now time.Tim
 	}
 	for _, f := range r.Findings {
 		out.Findings = append(out.Findings, &truthpb.Finding{
-			Class:  truthpb.FindingClass_FINDING_CLASS_REFUSAL,
-			Kind:   kindOf(f.Kind),
-			Topic:  f.Topic,
-			Detail: f.Detail,
+			Class:   truthpb.FindingClass_FINDING_CLASS_REFUSAL,
+			Kind:    kindOf(f.Kind),
+			Topic:   f.Topic,
+			Service: f.Service,
+			Detail:  f.Detail,
 		})
 	}
 	return out

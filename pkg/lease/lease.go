@@ -54,11 +54,20 @@ const graceCadences = 3
 const expiringMargin = 1.5
 
 // svc is one service's lease bookkeeping.
+//
+// last and renewed are DIFFERENT CLOCKS and the distinction is the whole
+// standing gate: last is when a heartbeat was observed, renewed is when one
+// last counted as a renewal. They are equal for every citizen in good
+// standing, and they diverge exactly while a refusal stands -- which is what
+// lets the table show a true last-heartbeat for a service whose lease is
+// decaying anyway.
 type svc struct {
 	last    time.Time
+	renewed time.Time
 	cadence time.Duration // EWMA of observed heartbeat gaps; zero until two beats
 	state   leasepb.LeaseState
 	beats   int64 // heartbeats observed this session -- the operator asked for the count
+	refused bool  // an open refusal-class offense stands; heartbeats do not renew
 }
 
 // SchemaResolver is the slice of consume.Resolver the authority needs -- an
@@ -67,16 +76,36 @@ type SchemaResolver interface {
 	Subject(ctx context.Context, id int32) (string, error)
 }
 
+// Standing is the read seam onto refusal-class offenses attributed to a
+// citizen -- satisfied by watch.Watcher, faked in tests. It answers when the
+// service last put a record on the wire that the contract system refused, and
+// whether any refused record has been attributed to it at all.
+//
+// Attribution is by record key and is therefore SELF-REPORTED, the same
+// standing the fleet's client-id convention has: adequate against bugs, which
+// is the threat model, and useless against malice, which is the SASL tier
+// (rfc-hall-monitor 3.5) and not this.
+type Standing interface {
+	LastOffContract(service string) (time.Time, bool)
+}
+
 // resolverFallback counts ticks of the legacy residue discriminator running
 // because the registry did not answer. Registered at zero in New, per fleet
 // policy: the failure mode is visible BEFORE the first failure.
 const resolverFallback = "hm_lease_resolver_fallback_total"
+
+// renewalsRefused counts heartbeats that landed but did not renew, because an
+// open refusal-class offense stood against the citizen. Registered at zero in
+// New for the same reason as resolverFallback: the operator can see the gate
+// exists before it ever fires.
+const renewalsRefused = "hm_lease_renewals_refused_total"
 
 // Authority judges heartbeats into lease state. One per hm.
 type Authority struct {
 	ctx context.Context
 	pub Publisher
 	res SchemaResolver
+	std Standing
 	log *slog.Logger
 
 	mu       sync.RWMutex
@@ -87,10 +116,13 @@ type Authority struct {
 // judge-but-do-not-emit, which keeps the table alive while the wire is being
 // repaired rather than coupling visibility to emission. A nil res means no
 // registry: discrimination falls back to unknown-field residue permanently,
-// which is exactly the pre-registry behavior.
-func New(ctx context.Context, pub Publisher, res SchemaResolver, log *slog.Logger) *Authority {
+// which is exactly the pre-registry behavior. A nil std means no standing
+// source, so every heartbeat renews -- the pre-gate behavior, degraded the
+// same way and just as visibly.
+func New(ctx context.Context, pub Publisher, res SchemaResolver, std Standing, log *slog.Logger) *Authority {
 	metrics.Add(resolverFallback, 0)
-	return &Authority{ctx: ctx, pub: pub, res: res, log: log, services: map[string]*svc{}}
+	metrics.Add(renewalsRefused, 0)
+	return &Authority{ctx: ctx, pub: pub, res: res, std: std, log: log, services: map[string]*svc{}}
 }
 
 // Observe is wired to the watcher's record hook. It ignores every topic but
@@ -182,6 +214,36 @@ func (a *Authority) renew(name string, at time.Time) {
 	}
 	s.last = at
 	s.beats++
+
+	// THE STANDING GATE (rfc-hall-monitor 3.4: renewal is automatic only while
+	// no open refusal-class finding stands against your traffic). A refused
+	// citizen's heartbeat is still fully OBSERVED -- the cadence keeps
+	// learning, the beat count keeps rising, the table keeps showing its true
+	// last heartbeat -- but it does not move the renewal clock. The lease
+	// therefore decays through EXPIRING to EXPIRED on the service's own
+	// cadence while the service is alive and beating.
+	//
+	// That decay IS the refusal. No new lease state is invented for it,
+	// because the states already say the true thing: the citizen's
+	// authorization is running out, and it is running out on schedule.
+	wasRefused := s.refused
+	s.refused = a.refusedLocked(name, s, at)
+	if s.refused {
+		a.mu.Unlock()
+		metrics.Inc(renewalsRefused)
+		if !wasRefused {
+			// once per onset, not per heartbeat: the alarm must not become the
+			// self-DoS the off-contract log line already taught this codebase.
+			a.log.Error("renewal refused; lease is decaying (refusal-class offense stands)",
+				"service", name)
+		}
+		return
+	}
+	if wasRefused {
+		a.log.Info("standing cleared; renewals resume", "service", name)
+	}
+
+	s.renewed = at
 	transitioned := s.state != leasepb.LeaseState_LEASE_STATE_AUTHORIZED
 	s.state = leasepb.LeaseState_LEASE_STATE_AUTHORIZED
 	verdict := a.verdictLocked(name, s)
@@ -191,6 +253,47 @@ func (a *Authority) renew(name string, at time.Time) {
 	if transitioned {
 		a.emit(verdict)
 	}
+}
+
+// refusedLocked reports whether an open refusal-class offense stands against
+// this citizen as of now. OPEN means the wire still shows the offense inside
+// the observation window: refused traffic attributed to this service arrived
+// within graceCadences of the service's OWN learned cadence. That is the same
+// three-cadence rule the absence ledger applies to silence -- one rule for
+// silence and offense alike, which is this codebase's existing idiom rather
+// than a second one invented here.
+//
+// THIS IS AN EXPLICIT V0 STAND-IN. rfc-hall-monitor 3.4 closes a refusal by
+// re-judging the citizen through a fresh surrogate session; that machinery is
+// v2 and does not exist yet. Until it does, standing SELF-RESTORES when the
+// behavior stops, which keeps the wire as the truth instead of a durable grudge
+// in hm's memory whose only exit is a process restart. Do not read the
+// self-restoring as the intended end state.
+//
+// Self-restoring is NOT forgetting: the count and last-offense time stay in the
+// watcher for the life of the session and keep showing up in the truth report.
+// The lease recovers; the evidence does not evaporate.
+//
+// The obvious alternative -- an operator acknowledgement that closes the
+// finding -- is the v1, and it waits deliberately. hm has no write surface
+// today (health, live, truth, truth/v1, api, metrics are all reads), and an
+// unauthenticated write on the judge would let anything that can reach hm clear
+// its OWN standing: the mechanism that restores authorization would be
+// reachable by the thing whose authorization is in question. That belongs with
+// a real authenticated surface, not invented here.
+//
+// No cadence, no verdict: a service seen once has no window to measure against,
+// and hm does not call a refusal it cannot cite -- the same refusal-default the
+// absence ledger applies to its own claims. Caller holds mu.
+func (a *Authority) refusedLocked(name string, s *svc, now time.Time) bool {
+	if a.std == nil || s.cadence == 0 {
+		return false
+	}
+	at, ok := a.std.LastOffContract(name)
+	if !ok {
+		return false // nothing attributed to this citizen; nothing to answer for
+	}
+	return now.Sub(at) <= time.Duration(graceCadences)*s.cadence
 }
 
 // Tick judges every known service against now. Wire it to a ticker faster
@@ -204,7 +307,9 @@ func (a *Authority) Tick(now time.Time) {
 		if s.cadence == 0 {
 			continue // one beat: present, but no history, so no expiry verdict
 		}
-		gap := now.Sub(s.last)
+		// against the RENEWAL clock, not the heartbeat clock: a refused citizen
+		// beats without renewing, and this is where that costs it the lease.
+		gap := now.Sub(s.renewed)
 		var want leasepb.LeaseState
 		switch {
 		case gap > time.Duration(graceCadences)*s.cadence:
@@ -237,7 +342,7 @@ func (a *Authority) verdictLocked(name string, s *svc) *leasepb.LeaseVerdict {
 		Authority:     "hm",
 	}
 	if s.cadence > 0 && s.state != leasepb.LeaseState_LEASE_STATE_EXPIRED {
-		v.ExpiresAt = timestamppb.New(s.last.Add(time.Duration(graceCadences) * s.cadence))
+		v.ExpiresAt = timestamppb.New(s.renewed.Add(time.Duration(graceCadences) * s.cadence))
 	}
 	return v
 }
@@ -270,6 +375,11 @@ type Row struct {
 	LastHeartbeat time.Time  `json:"last_heartbeat"`
 	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
 	CadenceMS     int64      `json:"cadence_ms,omitempty"`
+	// RenewalRefused: this citizen is beating but not renewing, because an open
+	// refusal-class offense stands against its traffic. Read it next to State --
+	// together they say "alive, and losing authorization anyway", which is the
+	// one situation the state word alone cannot express.
+	RenewalRefused bool `json:"renewal_refused,omitempty"`
 }
 
 // Snapshot returns the authorized table, sorted by service so the at-a-glance
@@ -280,14 +390,15 @@ func (a *Authority) Snapshot() []Row {
 	rows := make([]Row, 0, len(a.services))
 	for name, s := range a.services {
 		r := Row{
-			Service:       name,
-			State:         stateWord(s.state),
-			Beats:         s.beats,
-			LastHeartbeat: s.last,
-			CadenceMS:     s.cadence.Milliseconds(),
+			Service:        name,
+			State:          stateWord(s.state),
+			Beats:          s.beats,
+			LastHeartbeat:  s.last,
+			CadenceMS:      s.cadence.Milliseconds(),
+			RenewalRefused: s.refused,
 		}
 		if s.cadence > 0 && s.state != leasepb.LeaseState_LEASE_STATE_EXPIRED {
-			exp := s.last.Add(time.Duration(graceCadences) * s.cadence)
+			exp := s.renewed.Add(time.Duration(graceCadences) * s.cadence)
 			r.ExpiresAt = &exp
 		}
 		rows = append(rows, r)

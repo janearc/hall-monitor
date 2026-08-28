@@ -20,9 +20,9 @@ import (
 type Source interface {
 	Snapshot() (producers map[string]time.Time, groups map[string][]string)
 	// OffContract is who is on the wire but NOT in agreement with the
-	// contracts: per-topic counts of un-frameable records, and when the last
-	// one arrived.
-	OffContract() (counts map[string]int64, last map[string]time.Time)
+	// contracts: per-topic counts of un-frameable records, when the last one
+	// arrived, and how many of them named no citizen (a subset of counts).
+	OffContract() (counts map[string]int64, last map[string]time.Time, anon map[string]int64)
 }
 
 // TopicRow is one topic's truth.
@@ -46,11 +46,26 @@ type TopicRow struct {
 }
 
 // Finding is one refusal-class row, self-contained for the assessment tier.
+//
+// TOPIC AND SERVICE ARE DIFFERENT IDENTIFIERS and exactly one of them is set:
+// topic-scoped kinds (void, silent, off-contract) name a topic, citizen-scoped
+// kinds (lease-expired, renewal-refused) name a service. Until truth.v1.Finding
+// grew a service field, the citizen-scoped rows carried a service name in the
+// topic field -- a type confusion that read fine right up until something tried
+// to look the topic up.
+//
+// An empty Service is MEANINGFUL, not missing: the finding names no citizen, so
+// nobody's standing moves on it.
 type Finding struct {
-	Class  string `json:"class"` // "refusal" per the RFC table; findings-class rows arrive later
-	Kind   string `json:"kind"`  // "void" | "silent"
-	Topic  string `json:"topic"`
-	Detail string `json:"detail"`
+	Class string `json:"class"` // "refusal" per the RFC table; findings-class rows arrive later
+	// Kind is a closed set: "void" | "silent" | "off-contract" |
+	// "lease-expired" | "renewal-refused". kindOf in v1.go maps every one of
+	// them, and its totality test fails loudly if a word is added here without
+	// a mapping there.
+	Kind    string `json:"kind"`
+	Topic   string `json:"topic,omitempty"`
+	Service string `json:"service,omitempty"`
+	Detail  string `json:"detail"`
 }
 
 // Report is the truth report. GeneratedAt stamps it; everything else is
@@ -79,7 +94,7 @@ func Handler(src Source, led *ledger.Ledger, auth *lease.Authority) http.Handler
 // ledger, as of now.
 func Build(src Source, led *ledger.Ledger, auth *lease.Authority, now time.Time) Report {
 	producers, groups := src.Snapshot()
-	offCounts, offLast := src.OffContract()
+	offCounts, offLast, offAnon := src.OffContract()
 
 	// invert group->topics into topic->groups so each row carries its readers
 	consumersOf := map[string][]string{}
@@ -107,8 +122,19 @@ func Build(src Source, led *ledger.Ledger, auth *lease.Authority, now time.Time)
 		for _, row := range r.Authorized {
 			if row.State == "expired" {
 				r.Findings = append(r.Findings, Finding{
-					Class: "refusal", Kind: "lease-expired", Topic: row.Service,
+					Class: "refusal", Kind: "lease-expired", Service: row.Service,
 					Detail: "no heartbeat within three of its own observed cadences",
+				})
+			}
+			// A refused renewal is its own finding, separate from whatever the
+			// lease state has decayed to: the state says how much
+			// authorization is left, this says WHY it is draining while the
+			// citizen is demonstrably alive.
+			if row.RenewalRefused {
+				r.Findings = append(r.Findings, Finding{
+					Class: "refusal", Kind: "renewal-refused", Service: row.Service,
+					Detail: "heartbeats are arriving but do not renew: refused traffic " +
+						"attributed to this service within three of its own observed cadences",
 				})
 			}
 		}
@@ -136,9 +162,16 @@ func Build(src Source, led *ledger.Ledger, auth *lease.Authority, now time.Time)
 			if at, ok := offLast[t]; ok {
 				row.LastOffContract = &at
 			}
+			// topic-scoped and deliberately citizen-less: one topic's refused
+			// traffic may come from several producers, and the citizen-scoped
+			// consequence is the renewal-refused finding above. The anonymous
+			// count is stated because it is the part no lease gate can act on.
+			detail := fmt.Sprintf("%d records outside the contract system", n)
+			if a := offAnon[t]; a > 0 {
+				detail += fmt.Sprintf("; %d named no citizen and cost no lease", a)
+			}
 			r.Findings = append(r.Findings, Finding{
-				Class: "refusal", Kind: "off-contract", Topic: t,
-				Detail: fmt.Sprintf("%d records outside the contract system", n),
+				Class: "refusal", Kind: "off-contract", Topic: t, Detail: detail,
 			})
 		}
 		if row.Void {

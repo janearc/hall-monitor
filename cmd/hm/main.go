@@ -175,7 +175,10 @@ func wireLoop(ctx context.Context, cfg config.Config, srv *server.Server, truth,
 		// The resolver is session-scoped WITH it; the id->subject cache is
 		// cheap to rebuild and a stale registry answer cannot outlive the
 		// wire that produced it.
-		auth := lease.New(sctx, s.pub, consume.NewResolver(cfg.SchemaRegistryURL), logger)
+		// the watcher is the standing source: it is the half of hm that sees
+		// refused traffic, so it is the only thing that can say whether an
+		// offense stands against a citizen asking to renew.
+		auth := lease.New(sctx, s.pub, consume.NewResolver(cfg.SchemaRegistryURL), s.w, logger)
 		s.w.OnRecordValue(auth.Observe)
 		truth.Set(report.Handler(s.w, led, auth))
 		truthV1.Set(report.HandlerV1(s.w, led, auth))

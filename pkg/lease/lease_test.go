@@ -47,7 +47,7 @@ func beat(t *testing.T, name string) []byte {
 
 func testAuthority() (*Authority, *fakePub) {
 	pub := &fakePub{}
-	return New(context.Background(), pub, nil, slog.Default()), pub
+	return New(context.Background(), pub, nil, nil, slog.Default()), pub
 }
 
 func TestFirstBeatAuthorizesAndEmitsOnce(t *testing.T) {
@@ -172,7 +172,7 @@ func TestObserveIgnoresWhatItMust(t *testing.T) {
 }
 
 func TestNilPublisherJudgesWithoutEmitting(t *testing.T) {
-	a := New(context.Background(), nil, nil, slog.Default())
+	a := New(context.Background(), nil, nil, nil, slog.Default())
 	a.Observe(frood.TopicObservability, time.Now(), beat(t, "flipr"))
 	if len(a.Snapshot()) != 1 {
 		t.Fatal("judging must not depend on emission")

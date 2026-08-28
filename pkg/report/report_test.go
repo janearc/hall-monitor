@@ -16,6 +16,7 @@ import (
 
 type fakeSource struct {
 	offContract map[string]int64
+	offAnon     map[string]int64
 	producers   map[string]time.Time
 	groups      map[string][]string
 }
@@ -25,8 +26,8 @@ func (f fakeSource) Snapshot() (map[string]time.Time, map[string][]string) {
 	return f.producers, f.groups
 }
 
-func (f fakeSource) OffContract() (map[string]int64, map[string]time.Time) {
-	return f.offContract, nil
+func (f fakeSource) OffContract() (map[string]int64, map[string]time.Time, map[string]int64) {
+	return f.offContract, nil, f.offAnon
 }
 
 func TestBuildFlagsVoidAndSilent(t *testing.T) {
@@ -97,7 +98,7 @@ func TestBuildNilLedger(t *testing.T) {
 func TestAuthorizedTableAndLeaseExpiryFinding(t *testing.T) {
 	src := fakeSource{producers: map[string]time.Time{}, groups: map[string][]string{}}
 
-	auth := lease.New(context.Background(), nil, nil, slog.Default())
+	auth := lease.New(context.Background(), nil, nil, nil, slog.Default())
 	t0 := time.Now().Add(-10 * time.Minute)
 	auth.Observe(frood.TopicObservability, t0, framedBeat(t, "flipr"))
 	auth.Observe(frood.TopicObservability, t0.Add(10*time.Second), framedBeat(t, "flipr"))
@@ -109,8 +110,13 @@ func TestAuthorizedTableAndLeaseExpiryFinding(t *testing.T) {
 	}
 	found := false
 	for _, f := range r.Findings {
-		if f.Kind == "lease-expired" && f.Topic == "flipr" && f.Class == "refusal" {
+		// the citizen is named in Service, NOT in Topic: a lease belongs to a
+		// service and this finding is about no topic at all
+		if f.Kind == "lease-expired" && f.Service == "flipr" && f.Class == "refusal" {
 			found = true
+			if f.Topic != "" {
+				t.Fatalf("a citizen-scoped finding must name no topic, got %q", f.Topic)
+			}
 		}
 	}
 	if !found {
