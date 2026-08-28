@@ -76,7 +76,7 @@ func TestBuildV1MirrorsBuild(t *testing.T) {
 // a named enum value. A new word in Build without a mapping here fails this
 // test rather than silently rendering UNSPECIFIED in production.
 func TestKindOfIsTotalOverBuildsVocabulary(t *testing.T) {
-	for _, kind := range []string{"void", "silent", "off-contract", "lease-expired"} {
+	for _, kind := range []string{"void", "silent", "off-contract", "lease-expired", "renewal-refused"} {
 		if kindOf(kind) == truthpb.FindingKind_FINDING_KIND_UNSPECIFIED {
 			t.Fatalf("kind %q unmapped", kind)
 		}

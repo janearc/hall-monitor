@@ -175,7 +175,10 @@ func wireLoop(ctx context.Context, cfg config.Config, srv *server.Server, truth,
 		// The resolver is session-scoped WITH it; the id->subject cache is
 		// cheap to rebuild and a stale registry answer cannot outlive the
 		// wire that produced it.
-		auth := lease.New(sctx, s.pub, consume.NewResolver(cfg.SchemaRegistryURL), logger)
+		// the watcher is the standing source: it is the half of hm that sees
+		// refused traffic, so it is the only thing that can say whether an
+		// offense stands against a citizen asking to renew.
+		auth := lease.New(sctx, s.pub, consume.NewResolver(cfg.SchemaRegistryURL), s.w, logger)
 		s.w.OnRecordValue(auth.Observe)
 		truth.Set(report.Handler(s.w, led, auth))
 		truthV1.Set(report.HandlerV1(s.w, led, auth))
@@ -215,7 +218,10 @@ func wireLoop(ctx context.Context, cfg config.Config, srv *server.Server, truth,
 // so every session is whole and the heartbeat never reports GREEN from a
 // process that cannot see.
 func dial(ctx context.Context, cfg config.Config, logger *slog.Logger) (session, error) {
-	pub, err := emit.New(ctx, cfg.KafkaBrokers, cfg.SchemaRegistryURL)
+	// the client id is hm's own frood identity, per the fleet convention that
+	// client-id names the frood -- it is what the broker's quota lever aims at,
+	// so hm answers to the same identity it judges everyone else by.
+	pub, err := emit.New(ctx, cfg.KafkaBrokers, cfg.SchemaRegistryURL, "hm")
 	if err != nil {
 		return session{}, fmt.Errorf("publisher: %w", err)
 	}
