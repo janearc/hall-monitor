@@ -75,6 +75,10 @@ type Watcher struct {
 	// onRecord, when set, is called for every observed record (any framing).
 	// The absence ledger rides this seam. Set before Run; not synchronized.
 	onRecord func(topic string, at time.Time)
+	// onRecordValue additionally carries the record's bytes, for consumers
+	// that must read payloads (the lease authority decodes heartbeats). A
+	// separate hook so onRecord's existing riders keep their signature.
+	onRecordValue func(topic string, at time.Time, value []byte)
 
 	// lastOK is the last moment the broker answered anything: a fetch with
 	// no errors, or an introspection tick that succeeded. Run reads it on
@@ -96,6 +100,12 @@ func (w *Watcher) silentFor() time.Duration {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return time.Since(w.lastOK)
+}
+
+// OnRecordValue registers a per-record callback that receives the record's
+// bytes. MUST be called before Run, like OnRecord.
+func (w *Watcher) OnRecordValue(fn func(topic string, at time.Time, value []byte)) {
+	w.onRecordValue = fn
 }
 
 // OnRecord registers a per-record callback. MUST be called before Run.
@@ -250,6 +260,9 @@ func (w *Watcher) observe(rec *kgo.Record) {
 	w.mu.Unlock()
 	if w.onRecord != nil {
 		w.onRecord(rec.Topic, obs.At)
+	}
+	if w.onRecordValue != nil {
+		w.onRecordValue(rec.Topic, obs.At, rec.Value)
 	}
 }
 

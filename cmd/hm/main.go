@@ -22,6 +22,7 @@ import (
 
 	"github.com/janearc/hall-monitor/pkg/config"
 	"github.com/janearc/hall-monitor/pkg/connect"
+	"github.com/janearc/hall-monitor/pkg/lease"
 	"github.com/janearc/hall-monitor/pkg/ledger"
 	"github.com/janearc/hall-monitor/pkg/metrics"
 	"github.com/janearc/hall-monitor/pkg/report"
@@ -135,11 +136,32 @@ func wireLoop(ctx context.Context, cfg config.Config, srv *server.Server, truth 
 		metrics.Set(connected, 1)
 		srv.SetOK()
 		s.w.OnRecord(led.Observe)
-		truth.Set(report.Handler(s.w, led))
 
-		// this session's context: cancelling it stops the heartbeat and the
-		// introspection tick, which is the contract Run's comment states
+		// this session's context: cancelling it stops the heartbeat, the
+		// introspection tick and the lease judge, which is the contract Run's
+		// comment states
 		sctx, cancel := context.WithCancel(ctx)
+
+		// the lease authority is session-scoped like the publisher it emits
+		// through: a new session gets a fresh table, judged from the wire it
+		// is actually watching rather than remembered from one it lost.
+		auth := lease.New(sctx, s.pub, logger)
+		s.w.OnRecordValue(auth.Observe)
+		truth.Set(report.Handler(s.w, led, auth))
+		go func() {
+			// judge at a second's grain: cheap, idempotent, and finer than
+			// any plausible heartbeat cadence.
+			t := time.NewTicker(time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-sctx.Done():
+					return
+				case now := <-t.C:
+					auth.Tick(now)
+				}
+			}
+		}()
 		go frood.Heartbeat(sctx, s.pub, "hm", observabilityproto.Schema, cfg.HeartbeatInterval, logger)
 		runErr := s.w.Run(sctx, cfg.IntrospectTick)
 		cancel()

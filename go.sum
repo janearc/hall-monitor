@@ -1,10 +1,12 @@
+github.com/cenkalti/backoff/v4 v4.3.0 h1:MyRJ/UdXutAwSAT+s3wNd7MfTIcy71VQueUuFK343L8=
+github.com/cenkalti/backoff/v4 v4.3.0/go.mod h1:Y3VNntkOUPxTVeUxJ/G5vcM//AlwfmyYozVcomhLiZE=
 github.com/cpuguy83/go-md2man/v2 v2.0.6/go.mod h1:oOW0eioCTA6cOiMLiUPZOpcVxMig6NIQQ7OS05n1F4g=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
 github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2s0bqwp9tc8=
 github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
-github.com/janearc/big-little-mesh v0.0.0-20260629134544-acb1ed92c4bf h1:qJbIE1qM9eXu8QkO5dCkq1PjHYE7fAYasVnoRtPvI5g=
-github.com/janearc/big-little-mesh v0.0.0-20260629134544-acb1ed92c4bf/go.mod h1:dqKOE8eOM+K2kzhkccI3rsBWKt/xa6d30E5/eB5sue8=
+github.com/janearc/big-little-mesh v0.0.0-20260828130517-d045b19ba3ab h1:dsmkvtXGR6j3L21/EMXU313BJubgosC9rkjhu7Jh4Kg=
+github.com/janearc/big-little-mesh v0.0.0-20260828130517-d045b19ba3ab/go.mod h1:dqKOE8eOM+K2kzhkccI3rsBWKt/xa6d30E5/eB5sue8=
 github.com/klauspost/compress v1.18.6 h1:2jupLlAwFm95+YDR+NwD2MEfFO9d4z4Prjl1XXDjuao=
 github.com/klauspost/compress v1.18.6/go.mod h1:cwPg85FWrGar70rWktvGQj8/hthj3wpl0PGDogxkrSQ=
 github.com/pierrec/lz4/v4 v4.1.26 h1:GrpZw1gZttORinvzBdXPUXATeqlJjqUG/D87TKMnhjY=
