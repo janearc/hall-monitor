@@ -178,7 +178,7 @@ bus. Levers, in deployment order:
 surrogate pass. Renewal is automatic while (a) no open REFUSAL-CLASS finding
 stands against your traffic and (b) no new build of you has registered;
 either failing forces a fresh surrogate session first. **Renewal is
-mechanical** — ledger and registration checks only, no session, no mapesis,
+mechanical** — ledger and registration checks only, no session, no model in the loop,
 no metal. hm at steady state is a consumer and a bookkeeper.
 
 Refusal-class, enumerated (grows only by ratified addition):
@@ -385,7 +385,7 @@ Swept into this design at operator direction:
 | v0 | this doc ratified; passive resident on the network; truth report; quota lever; floater roster pane + alarm path | today (13) |
 | v1 | attestation: SASL listener, SA-scoped SCRAM, scope declarations, signed-tag ceremony with one-click tooling + matching runbook, broker durability restart test, mint flow, registration carries build identity, kafka-user enumeration + per-repo migration issues | next sprint, named |
 | v2 | leases, surrogate sessions, promotion-by-ACL, lease stream, untrusted mode (if ratified) | after v1 |
-| v3 | mapesis assessment on transcripts (rides sprints 38); emergent-state classification | after the metal proves out |
+| v3 | emergent-state classification on transcripts | after the metal proves out |
 
 **v0 definition of done**: the truth report exists, is machine-readable,
 names every producer with no live consumer and every declared emitter that
@@ -446,7 +446,7 @@ func (h *HM) evaluate(dep Deploy) {
     if !h.judgeGreen(dep.Commit)   { h.refuse(dep, "judge not green"); return }
     cand := h.session(dep)          // candidate transcript, session topics
     base := h.session(h.prod(dep))  // baseline against current build
-    diff := transcriptDiff(base, cand) // mechanical; mapesis-shaped chunks
+    diff := transcriptDiff(base, cand) // mechanical; small self-contained chunks
     if !h.assess(diff) { h.refuse(dep, diff.Citations()); return }
     h.mint(dep)      // SCRAM password rotated, Secret placed
     h.promote(dep)   // broker FIRST: production ACLs, lease clock
