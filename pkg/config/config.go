@@ -21,6 +21,13 @@ type Config struct {
 	// HeartbeatInterval is the frood heartbeat cadence (HM_HEARTBEAT_INTERVAL,
 	// Go duration syntax).
 	HeartbeatInterval time.Duration
+	// FliprURL locates the flag store, BY NAME (HM_FLIPR_URL). Empty disables
+	// flag polling entirely -- hm runs fine with no flipr, holding LogLevel.
+	FliprURL string
+	// LogLevel is the boot default (HM_LOG_LEVEL); the log.level flag in
+	// flipr (service scope over _global) overrides it at runtime. The fleet
+	// default is warn -- info and debug exist to be flipped on, not lived in.
+	LogLevel string
 	// IntrospectTick is the broker-introspection cadence (HM_INTROSPECT_TICK,
 	// Go duration syntax). Jittered +-20% at runtime.
 	IntrospectTick time.Duration
@@ -31,6 +38,8 @@ func FromEnv() Config {
 	cfg := Config{
 		SchemaRegistryURL: envOr("HM_SCHEMA_REGISTRY_URL", "http://localhost:8081"),
 		HTTPAddr:          envOr("HM_HTTP_ADDR", ":8090"),
+		FliprURL:          envOr("HM_FLIPR_URL", "http://flipr.flipr.svc.cluster.local"),
+		LogLevel:          envOr("HM_LOG_LEVEL", "warn"),
 		HeartbeatInterval: 15 * time.Second,
 	}
 	if v := os.Getenv("HM_KAFKA_BROKERS"); v != "" {

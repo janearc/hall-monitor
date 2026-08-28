@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	blmflag "github.com/janearc/big-little-mesh/flag"
 	"github.com/janearc/big-little-mesh/emit"
 	"github.com/janearc/big-little-mesh/frood"
 	observabilityproto "github.com/janearc/big-little-mesh/proto/observability/v1"
@@ -59,13 +60,27 @@ func main() {
 // run is the daemon: logging, config, the control port, and the wire loop;
 // blocks until signalled.
 func run() error {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	slog.SetDefault(logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	cfg := config.FromEnv()
+
+	// The level is a dial, not a constant: boot at cfg.LogLevel (fleet
+	// default warn), then follow the log.level flag -- hm's own scope over
+	// _global -- for as long as flipr answers. Flipr absent holds the level;
+	// see blm/flag for why tuning inverts the gate rule.
+	var level slog.LevelVar
+	if lvl, lerr := blmflag.ParseLevel(cfg.LogLevel); lerr == nil {
+		level.Set(lvl)
+	} else {
+		level.Set(slog.LevelWarn)
+	}
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: &level}))
+	slog.SetDefault(logger)
+	if cfg.FliprURL != "" {
+		go blmflag.PollLogLevel(ctx, cfg.FliprURL, "hm", &level, logger, 15*time.Second)
+	}
 	srv := server.New(cfg.HTTPAddr, logger)
 
 	metrics.Add(attemptsOK, 0)
