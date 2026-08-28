@@ -15,13 +15,14 @@ import (
 	"syscall"
 	"time"
 
+	blmflag "github.com/janearc/big-little-mesh/flag"
 	"github.com/janearc/big-little-mesh/emit"
 	"github.com/janearc/big-little-mesh/frood"
-	observabilityproto "github.com/janearc/big-little-mesh/proto/observability/v1"
 	"github.com/spf13/cobra"
 
 	"github.com/janearc/hall-monitor/pkg/config"
 	"github.com/janearc/hall-monitor/pkg/connect"
+	"github.com/janearc/hall-monitor/pkg/lease"
 	"github.com/janearc/hall-monitor/pkg/ledger"
 	"github.com/janearc/hall-monitor/pkg/metrics"
 	"github.com/janearc/hall-monitor/pkg/report"
@@ -58,13 +59,27 @@ func main() {
 // run is the daemon: logging, config, the control port, and the wire loop;
 // blocks until signalled.
 func run() error {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	slog.SetDefault(logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	cfg := config.FromEnv()
+
+	// The level is a dial, not a constant: boot at cfg.LogLevel (fleet
+	// default warn), then follow the log.level flag -- hm's own scope over
+	// _global -- for as long as flipr answers. Flipr absent holds the level;
+	// see blm/flag for why tuning inverts the gate rule.
+	var level slog.LevelVar
+	if lvl, lerr := blmflag.ParseLevel(cfg.LogLevel); lerr == nil {
+		level.Set(lvl)
+	} else {
+		level.Set(slog.LevelWarn)
+	}
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: &level}))
+	slog.SetDefault(logger)
+	if cfg.FliprURL != "" {
+		go blmflag.PollLogLevel(ctx, cfg.FliprURL, "hm", &level, logger, 15*time.Second)
+	}
 	srv := server.New(cfg.HTTPAddr, logger)
 
 	metrics.Add(attemptsOK, 0)
@@ -135,12 +150,33 @@ func wireLoop(ctx context.Context, cfg config.Config, srv *server.Server, truth 
 		metrics.Set(connected, 1)
 		srv.SetOK()
 		s.w.OnRecord(led.Observe)
-		truth.Set(report.Handler(s.w, led))
 
-		// this session's context: cancelling it stops the heartbeat and the
-		// introspection tick, which is the contract Run's comment states
+		// this session's context: cancelling it stops the heartbeat, the
+		// introspection tick and the lease judge, which is the contract Run's
+		// comment states
 		sctx, cancel := context.WithCancel(ctx)
-		go frood.Heartbeat(sctx, s.pub, "hm", observabilityproto.Schema, cfg.HeartbeatInterval, logger)
+
+		// the lease authority is session-scoped like the publisher it emits
+		// through: a new session gets a fresh table, judged from the wire it
+		// is actually watching rather than remembered from one it lost.
+		auth := lease.New(sctx, s.pub, logger)
+		s.w.OnRecordValue(auth.Observe)
+		truth.Set(report.Handler(s.w, led, auth))
+		go func() {
+			// judge at a second's grain: cheap, idempotent, and finer than
+			// any plausible heartbeat cadence.
+			t := time.NewTicker(time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-sctx.Done():
+					return
+				case now := <-t.C:
+					auth.Tick(now)
+				}
+			}
+		}()
+		go frood.Heartbeat(sctx, s.pub, "hm", cfg.HeartbeatInterval, logger)
 		runErr := s.w.Run(sctx, cfg.IntrospectTick)
 		cancel()
 

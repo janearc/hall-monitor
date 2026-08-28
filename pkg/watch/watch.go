@@ -71,10 +71,22 @@ type Watcher struct {
 	// groupTopics is consumer group -> topics it consumes, from the last
 	// introspection tick. Zero groups on a producing topic = the void.
 	groupTopics map[string][]string
+	// offContract counts un-frameable records per topic: traffic that is ON
+	// the wire but NOT in agreement with the contract system. Aggregated here
+	// because the per-record ERROR alone amplified itself into a 164MB log
+	// loop the night the collector shipped raw JSON -- the count is the
+	// operator's answer, the log line is only the alarm, and an alarm that
+	// fires per record is a self-DoS.
+	offContract     map[string]int64
+	offContractLast map[string]time.Time
 
 	// onRecord, when set, is called for every observed record (any framing).
 	// The absence ledger rides this seam. Set before Run; not synchronized.
 	onRecord func(topic string, at time.Time)
+	// onRecordValue additionally carries the record's bytes, for consumers
+	// that must read payloads (the lease authority decodes heartbeats). A
+	// separate hook so onRecord's existing riders keep their signature.
+	onRecordValue func(topic string, at time.Time, value []byte)
 
 	// lastOK is the last moment the broker answered anything: a fetch with
 	// no errors, or an introspection tick that succeeded. Run reads it on
@@ -96,6 +108,12 @@ func (w *Watcher) silentFor() time.Duration {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return time.Since(w.lastOK)
+}
+
+// OnRecordValue registers a per-record callback that receives the record's
+// bytes. MUST be called before Run, like OnRecord.
+func (w *Watcher) OnRecordValue(fn func(topic string, at time.Time, value []byte)) {
+	w.onRecordValue = fn
 }
 
 // OnRecord registers a per-record callback. MUST be called before Run.
@@ -243,13 +261,29 @@ func (w *Watcher) observe(rec *kgo.Record) {
 		metrics.Inc(fmt.Sprintf("hm_records_total{topic=%q,schema_id=\"%d\"}", rec.Topic, id))
 	} else {
 		metrics.Inc(fmt.Sprintf("hm_off_contract_total{topic=%q}", rec.Topic))
-		w.log.Error("off-contract traffic (refusal-class)", "topic", rec.Topic, "err", err)
+		w.mu.Lock()
+		if w.offContract == nil {
+			w.offContract = map[string]int64{}
+			w.offContractLast = map[string]time.Time{}
+		}
+		w.offContract[rec.Topic]++
+		n := w.offContract[rec.Topic]
+		w.offContractLast[rec.Topic] = obs.At
+		w.mu.Unlock()
+		// First occurrence and every 1000th: the alarm without the self-DoS.
+		if n == 1 || n%1000 == 0 {
+			w.log.Error("off-contract traffic (refusal-class)",
+				"topic", rec.Topic, "err", err, "records_so_far", n)
+		}
 	}
 	w.mu.Lock()
 	w.producersSeen[rec.Topic] = obs.At
 	w.mu.Unlock()
 	if w.onRecord != nil {
 		w.onRecord(rec.Topic, obs.At)
+	}
+	if w.onRecordValue != nil {
+		w.onRecordValue(rec.Topic, obs.At, rec.Value)
 	}
 }
 
@@ -378,6 +412,23 @@ func (w *Watcher) Snapshot() (producers map[string]time.Time, groups map[string]
 		groups[g] = append([]string(nil), ts...)
 	}
 	return producers, groups
+}
+
+// OffContract returns, per topic, how many records arrived outside the
+// contract system and when the last one did: who is on the wire but not in
+// agreement. Empty maps when everyone agrees.
+func (w *Watcher) OffContract() (counts map[string]int64, last map[string]time.Time) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	counts = make(map[string]int64, len(w.offContract))
+	for t, n := range w.offContract {
+		counts[t] = n
+	}
+	last = make(map[string]time.Time, len(w.offContractLast))
+	for t, at := range w.offContractLast {
+		last[t] = at
+	}
+	return counts, last
 }
 
 // frameSchemaID reads the Confluent SR wire header and returns the schema
