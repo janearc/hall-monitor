@@ -9,8 +9,8 @@ here. The service is `hm`; "sentinel" names the ROLE it implements. Mascot:
 thinking-face emoji, display surfaces only, never in shell output.
 
 The design has three components: **hm** (section 3), **additions to the
-judge** (section 4), and **mapesis** (section 5). They are separable —
-mapesis failing entirely is a stopping condition for section 5, not for hm.
+judge** (section 4). Section 5 held mapesis, which is wonderlib's; it is
+extracted (see the section 5 stub) and its fate does not gate hm.
 
 ## 1. The problem
 
@@ -178,7 +178,7 @@ bus. Levers, in deployment order:
 surrogate pass. Renewal is automatic while (a) no open REFUSAL-CLASS finding
 stands against your traffic and (b) no new build of you has registered;
 either failing forces a fresh surrogate session first. **Renewal is
-mechanical** — ledger and registration checks only, no session, no mapesis,
+mechanical** — ledger and registration checks only, no session, no model in the loop,
 no metal. hm at steady state is a consumer and a bookkeeper.
 
 Refusal-class, enumerated (grows only by ratified addition):
@@ -354,130 +354,14 @@ decidable from artifacts belongs to the judge; it gains three checks:
 - **Contract-diff hygiene.** buf-breaking and gen-freshness results are
   cited in the verdict, not assumed.
 
-## 5. Mapesis
+## 5. Mapesis -- EXTRACTED
 
-**Mapped synthesis → "mapesis"** (operator's coinage, canonical):
-mechanically decompose material into chunks small enough for a local model
-to process without confabulating (the MAP); process each chunk; synthesize
-the chunk results with the same local process (the SYNTHESIS). wonderlib
-already works this way — this formalizes an existing process. RULED:
-**mapesis lives in wonderlib.** Consumers (judge and hm, both Go) reach it
-across the language boundary: a thin contracted surface over the Python/MLX
-carve-out, strictly typed, treated as untrusted input, never an in-process
-import.
-
-**The economics.** Fable runs on its own token allotment under the
-operator's Claude Max plan; Opus decomposes documents well but Fable signs
-off eventually. The goal is not a free tier — it is getting Fable and Opus
-OUT OF THE MIDDLE:
-
-1. Fable decides mapesis applies and writes the mapper instructions —
-   highly regular, curated for the engines doing the work. Mapesis MAY
-   first assess a document's viability for mapping, and an advanced model
-   MAY recompose a document into mapesis-available form.
-2. Mapesis maps.
-3. Mapesis synthesizes.
-4. Fable verifies the synthesis AGAINST THE INSTRUCTIONS — by definition
-   without re-reading the corpus, or the point is defeated.
-
-Requirements that fall out of step 4: mapesis products are not prose — they
-are itemized digests of exactly what was asked, trivially verifiable
-without re-reviewing the corpus, cache-optimized (avoid vocabulary with
-high encoding tax). Inputs may drift from natural-sounding language toward
-the harshest reduction that still carries content — approaching a regular
-grammar — and that is intended. When it works it saves up to twenty minutes
-of Fable wallclock per document.
-
-**Engines — enumerated on this host before commit** (macOS 27.0 "golden
-gate" beta, July 2026). The throwaway, included with its output per review:
-
-```swift
-// throwaway: enumerate Apple Foundation Models availability on this host
-import FoundationModels
-
-let base = SystemLanguageModel.default
-print("default model availability: \(base.availability)")
-print("default model isAvailable:  \(base.isAvailable)")
-for (name, uc) in [("general", SystemLanguageModel.UseCase.general),
-                   ("contentTagging", .contentTagging)] {
-    print("useCase \(name): available=\(SystemLanguageModel(useCase: uc).isAvailable)")
-}
-print("supported languages: \(base.supportedLanguages.count)")
-```
-
-```
-default model availability: available
-default model isAvailable:  true
-useCase general: available=true
-useCase contentTagging: available=true
-supported languages: 23
-```
-
-**What it actually is** (so we can reason about capability, not just
-presence). This is Apple's own foundation model family, WWDC26 generation:
-the on-device model was rebuilt this cycle and sits in the ~3B-parameter
-class; the announced "AFM 3 Core Advanced" (20B sparse, 1-4B parameters
-active per request) is the Private Cloud Compute tier, which reports
-UNAVAILABLE in this context — fine, because a cloud tier would defeat the
-point. It is not Siri (Siri's models are separate asset families, visible
-side-by-side on disk: UAF_Siri_* vs UAF_FM_*), and it is not a repackaged
-third-party model. Not phi-2. Asset families present on this host include
-FM_GenerativeModels, FM_CodeLM — a distinct code model, worth its own
-sprints-38 look — and FM_Visual (the WWDC26 vision capability); asset
-directory sizes are root-locked, so on-disk weight was not measured.
-
-macOS 27 also ships `fm`, a first-party CLI over the framework
-(/usr/bin/fm): `available`, `chat`, `respond`, `schema` (JSON generation
-schemas), `token-count`, `quota-usage`, and — the integration seam handed
-to us — `serve`, a local Chat Completions API server over the on-device
-model. wonderlib can speak a standard chat-completions dialect to the metal
-without any Swift bridge of ours.
-
-```
-% fm available
-System model available
-```
-
-First capability datum, recorded: asked (via `fm respond`) for an exact
-JSON object "and nothing else," the model returned the correct JSON wrapped
-in a markdown fence — instructable, with small-model texture the harness
-strips mechanically. That is a mapesis-shaped answer to a mapesis-shaped
-ask. What sprints 38 still owes is the real capability evaluation: can it
-hold the mapper role over our material without confabulating.
-
-**Engine posture, ruled: mapesis is PROVEN on mistral-24b, and the engine
-seat is a config value.** A 3B-class model is expected to underperform this
-role today; we do not gate mapesis on it. Also on this host (ollama):
-mistral-24b (19GB, genuinely good at regular structured work, not on the
-metal), llama3.1, llama3.2. The alignment that makes the seat swappable is
-already in place: ollama and `fm serve` both speak the chat-completions
-dialect, so mapesis targets ONE endpoint shape and the engine changes by
-configuration — kick the chair out from under mistral whenever a stronger
-engine arrives, on-metal or otherwise. The platform's trajectory makes a
-stronger on-device model a matter of when, not if; when AFM (or FM_CodeLM)
-clears the capability bar sprints 38 defines, it takes the seat and the
-work moves to the ANE for free. Until then mistral proves the process, and
-every engine evaluation lands as a dated finding (doctrine 7).
-
-**Bounds.** hm's transcripts and the judge's evidence bundles are
-mapesis-shaped from day one (self-contained units, machine-readable,
-independently judgeable). Steady-state metal load is ~zero: assessment
-fires at deploy time and on flagged novelties, never on the renewal clock.
-The Go caller wraps mapesis in an aggressive timeout; unavailable, hung, or
-over-time assessment is cannot-rule, and cannot-rule is refusal citing
-"assessment unavailable" — recorded as a finding like every other verdict
-(doctrine 7), so the pattern of assessment failures is itself examinable
-later. Model flakiness makes deploys wait; it never makes them blind, and
-it never silently downgrades a judged admission to a mechanical one.
-
-**This effort may fail entirely.** We go to great lengths to prove it
-possible or conclusively not-worth-it; a first or second failure is a
-finding, never the verdict — and so is the conditional answer: "possibly a
-more advanced metal model would make this possible, but it is not possible
-presently" is a RECORDED finding (doctrine 7), dated and revisitable when
-the metal improves, not a shrug. If mapesis fails, that is a stopping
-condition for this section only — hm's mechanical layers stand without it,
-and the hole gets a deliberate decision.
+This section held the mapesis design (mapped synthesis; the operator's
+coinage). It is wonderlib's, not hm's -- it landed here because both were
+being worked at once. Extracted verbatim to
+[EXTRACTED-mapesis.md](EXTRACTED-mapesis.md) on 2026-08-28, awaiting
+relocation to wonderlib; the section number is kept so citations of sections
+6 through 8 stay true.
 
 ## 6. Estate and sequencing
 
@@ -498,10 +382,10 @@ Swept into this design at operator direction:
 
 | Rung | Scope | When |
 |------|-------|------|
-| v0 | this doc ratified; passive resident on the network; truth report; quota lever; floater roster pane + alarm path | today (13) |
-| v1 | attestation: SASL listener, SA-scoped SCRAM, scope declarations, signed-tag ceremony with one-click tooling + matching runbook, broker durability restart test, mint flow, registration carries build identity, kafka-user enumeration + per-repo migration issues | next sprint, named |
-| v2 | leases, surrogate sessions, promotion-by-ACL, lease stream, untrusted mode (if ratified) | after v1 |
-| v3 | mapesis assessment on transcripts (rides sprints 38); emergent-state classification | after the metal proves out |
+| v0 | this doc ratified; passive resident on the network; truth report; contracted heartbeat. SHIPPED. Not built from the original v0 list: quota lever, floater roster pane, alarm path -- measured absent 2026-08-28, moved to v1 | today (13) |
+| v1 | quota lever, alarm path, operator surface (carried from v0); attestation: SASL listener, SA-scoped SCRAM, scope declarations, signed-tag ceremony with one-click tooling + matching runbook, broker durability restart test, mint flow, registration carries build identity, kafka-user enumeration + per-repo migration issues | next sprint, named |
+| v2 | leases: VISIBILITY FIRST, promoted to the active build by the operator 2026-08-28 -- "it should be visible at a glance who is authorized to be on the network." A lease is a contracted bus message; hm is the authority; /truth grows an authorized table; an unleased producer is a refusal-class finding; flipr and kingfisher are the first lessees. Enforcement (promotion-by-ACL, lease stream, surrogate sessions) follows visibility | active |
+| v3 | emergent-state classification on transcripts | after the metal proves out |
 
 **v0 definition of done**: the truth report exists, is machine-readable,
 names every producer with no live consumer and every declared emitter that
@@ -562,7 +446,7 @@ func (h *HM) evaluate(dep Deploy) {
     if !h.judgeGreen(dep.Commit)   { h.refuse(dep, "judge not green"); return }
     cand := h.session(dep)          // candidate transcript, session topics
     base := h.session(h.prod(dep))  // baseline against current build
-    diff := transcriptDiff(base, cand) // mechanical; mapesis-shaped chunks
+    diff := transcriptDiff(base, cand) // mechanical; small self-contained chunks
     if !h.assess(diff) { h.refuse(dep, diff.Citations()); return }
     h.mint(dep)      // SCRAM password rotated, Secret placed
     h.promote(dep)   // broker FIRST: production ACLs, lease clock

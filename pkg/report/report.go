@@ -1,7 +1,7 @@
 // Package report builds the truth report: the machine-readable statement of
-// who is talking, to whom, and what is yelling into the void. Rows are
-// mapesis-shaped on purpose — small, self-contained, independently judgeable
-// — because this document is what the assessment tier will read.
+// who is talking, to whom, and what is yelling into the void. Rows are small,
+// self-contained and independently judgeable on purpose — this document is
+// what the assessment tier will read.
 package report
 
 import (
