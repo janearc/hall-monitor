@@ -15,11 +15,12 @@ import (
 	"syscall"
 	"time"
 
-	blmflag "github.com/janearc/big-little-mesh/flag"
 	"github.com/janearc/big-little-mesh/emit"
+	blmflag "github.com/janearc/big-little-mesh/flag"
 	"github.com/janearc/big-little-mesh/frood"
 	"github.com/spf13/cobra"
 
+	"github.com/janearc/hall-monitor/pkg/apidesc"
 	"github.com/janearc/hall-monitor/pkg/config"
 	"github.com/janearc/hall-monitor/pkg/connect"
 	"github.com/janearc/hall-monitor/pkg/lease"
@@ -90,8 +91,19 @@ func run() error {
 	// /truth is registered now, before the control port serves, and answers
 	// 503 until the wire loop hands it a watcher. The absence ledger lives
 	// for the whole process: a reconnection must not forget what it saw.
+	//
+	// THE MUX SERVES MAJORS SIDE BY SIDE (the versioning directive's flagship):
+	// /truth is the legacy hand-rolled JSON, kept until deliberately retired;
+	// /truth/v1 is the truth.v1 contract as canonical protojson. A breaking
+	// reshape becomes truth.v2 in blm and /truth/v2 here, beside these, per
+	// blm CONTRIBUTING's contract-majors rule. /api serves the descriptor of
+	// every major this binary speaks, from the runtime protoregistry -- static
+	// truth about the binary, so it answers before the wire is up.
 	truth := &report.Gate{}
+	truthV1 := &report.Gate{}
 	srv.Handle("/truth", truth)
+	srv.Handle("/truth/v1", truthV1)
+	srv.Handle("/api", apidesc.Handler())
 	led := ledger.New()
 
 	if len(cfg.KafkaBrokers) == 0 {
@@ -101,7 +113,7 @@ func run() error {
 		logger.Error("hm is up with no broker configured; health reports degraded")
 	} else {
 		srv.SetDegraded("kafka not connected yet")
-		go wireLoop(ctx, cfg, srv, truth, led, logger)
+		go wireLoop(ctx, cfg, srv, truth, truthV1, led, logger)
 	}
 
 	logger.Info("hm starting", "brokers", len(cfg.KafkaBrokers), "addr", cfg.HTTPAddr)
@@ -121,7 +133,7 @@ type session struct {
 // again. It returns only when ctx ends. Until 2026-08-22 this was one dial
 // at startup; the VM restart that day scheduled hm before kafka's DNS
 // existed and hm ran blind for forty minutes under a green liveness probe.
-func wireLoop(ctx context.Context, cfg config.Config, srv *server.Server, truth *report.Gate,
+func wireLoop(ctx context.Context, cfg config.Config, srv *server.Server, truth, truthV1 *report.Gate,
 	led *ledger.Ledger, logger *slog.Logger) {
 	for ctx.Err() == nil {
 		var s session
@@ -162,6 +174,7 @@ func wireLoop(ctx context.Context, cfg config.Config, srv *server.Server, truth 
 		auth := lease.New(sctx, s.pub, logger)
 		s.w.OnRecordValue(auth.Observe)
 		truth.Set(report.Handler(s.w, led, auth))
+		truthV1.Set(report.HandlerV1(s.w, led, auth))
 		go func() {
 			// judge at a second's grain: cheap, idempotent, and finer than
 			// any plausible heartbeat cadence.
@@ -182,6 +195,7 @@ func wireLoop(ctx context.Context, cfg config.Config, srv *server.Server, truth 
 
 		// the wire is down, or we are: say that first, then clean up
 		truth.Clear()
+		truthV1.Clear()
 		metrics.Set(connected, 0)
 		if errors.Is(runErr, watch.ErrWireLost) {
 			metrics.Inc(wireLost)

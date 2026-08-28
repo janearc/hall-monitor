@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/binary"
 	"github.com/janearc/big-little-mesh/frood"
+	obspb "github.com/janearc/big-little-mesh/gen/go/observability/v1"
 	"github.com/janearc/hall-monitor/pkg/lease"
 	"google.golang.org/protobuf/proto"
 	"log/slog"
-	obspb "github.com/janearc/big-little-mesh/gen/go/observability/v1"
 	"testing"
 	"time"
 
@@ -16,8 +16,8 @@ import (
 
 type fakeSource struct {
 	offContract map[string]int64
-	producers map[string]time.Time
-	groups    map[string][]string
+	producers   map[string]time.Time
+	groups      map[string][]string
 }
 
 // Snapshot returns the fake's fixed state.

@@ -5,14 +5,14 @@
 package report
 
 import (
-	"fmt"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"time"
 
-	"github.com/janearc/hall-monitor/pkg/ledger"
 	"github.com/janearc/hall-monitor/pkg/lease"
+	"github.com/janearc/hall-monitor/pkg/ledger"
 )
 
 // Source is the watcher's read seam: who produced (and when last), and which
@@ -56,14 +56,14 @@ type Finding struct {
 // Report is the truth report. GeneratedAt stamps it; everything else is
 // evidence with its source stated.
 type Report struct {
-	Service     string              `json:"service"`
-	GeneratedAt time.Time           `json:"generated_at"`
+	Service     string    `json:"service"`
+	GeneratedAt time.Time `json:"generated_at"`
 	// Authorized is the lease authority's table: who is on the network, at a
 	// glance. Present when hm runs with a lease authority, absent otherwise.
-	Authorized  []lease.Row         `json:"authorized,omitempty"`
-	Topics      []TopicRow          `json:"topics"`
-	Groups      map[string][]string `json:"groups"`
-	Findings    []Finding           `json:"findings"`
+	Authorized []lease.Row         `json:"authorized,omitempty"`
+	Topics     []TopicRow          `json:"topics"`
+	Groups     map[string][]string `json:"groups"`
+	Findings   []Finding           `json:"findings"`
 }
 
 // Handler serves the truth report at request time — always current, never
