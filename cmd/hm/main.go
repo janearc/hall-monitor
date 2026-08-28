@@ -18,7 +18,6 @@ import (
 	blmflag "github.com/janearc/big-little-mesh/flag"
 	"github.com/janearc/big-little-mesh/emit"
 	"github.com/janearc/big-little-mesh/frood"
-	observabilityproto "github.com/janearc/big-little-mesh/proto/observability/v1"
 	"github.com/spf13/cobra"
 
 	"github.com/janearc/hall-monitor/pkg/config"
